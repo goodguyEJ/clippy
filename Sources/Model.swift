@@ -2,8 +2,8 @@ import AppKit
 import CryptoKit
 
 extension NSPasteboard.PasteboardType {
-    /// Marker added to everything ClipStash writes, so the monitor can tell its own writes apart.
-    static let clipStashOwn = NSPasteboard.PasteboardType("local.personal.clipstash.own")
+    /// Marker added to everything Clippy writes, so the monitor can tell its own writes apart.
+    static let clipStashOwn = NSPasteboard.PasteboardType("local.personal.clippy.own")
 }
 
 func sha256(_ data: Data) -> String {
@@ -98,11 +98,11 @@ final class HistoryStore: ObservableObject {
     let blobsDir: URL
     private var file: URL { dir.appendingPathComponent("history-v2.json") }
     private var saveWork: DispatchWorkItem?
-    private let ioQueue = DispatchQueue(label: "local.personal.clipstash.save", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "local.personal.clippy.save", qos: .utility)
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        dir = base.appendingPathComponent("ClipStash", isDirectory: true)
+        dir = base.appendingPathComponent("Clippy", isDirectory: true)
         blobsDir = dir.appendingPathComponent("blobs", isDirectory: true)
         try? FileManager.default.createDirectory(at: blobsDir, withIntermediateDirectories: true)
         load()
@@ -127,12 +127,12 @@ final class HistoryStore: ObservableObject {
             items = decoded.compactMap(\.item)
             if items.count < decoded.count {
                 backupHistoryFile(reason: "partial")
-                NSLog("ClipStash: \(decoded.count - items.count) history items couldn't be read; original kept as a backup")
+                NSLog("Clippy: \(decoded.count - items.count) history items couldn't be read; original kept as a backup")
             }
         } catch {
             // Never start over silently: keep the original file next to the new one.
             backupHistoryFile(reason: "unreadable")
-            NSLog("ClipStash: history file couldn't be read (\(error)); original kept as a backup")
+            NSLog("Clippy: history file couldn't be read (\(error)); original kept as a backup")
         }
     }
 

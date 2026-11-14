@@ -167,7 +167,7 @@ struct PopupView: View {
     private func header(_ look: PopupLook) -> some View {
         HStack(spacing: 8) {
             if look.showTitle {
-                Text("ClipStash").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                Text("Clippy").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
             }
             if look.showSearch {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -349,7 +349,7 @@ final class PopupController: NSObject, NSWindowDelegate {
     func show(fromStatusItem: Bool = false) {
         if isOpen { panel?.makeKeyAndOrderFront(nil); return }
         let front = NSWorkspace.shared.frontmostApplication
-        // nil means ClipStash itself (e.g. its Settings window) is the paste target.
+        // nil means Clippy itself (e.g. its Settings window) is the paste target.
         previousApp = front?.processIdentifier == getpid() ? nil : front
         let caret = (!fromStatusItem && Prefs.popupPosition == .caret) ? Caret.rect() : nil
 

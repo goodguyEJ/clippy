@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 
 /// UserDefaults keys. Several match the spec's scripting keys
-/// (`defaults write local.personal.clipstash ignoreEvents -bool true`).
+/// (`defaults write local.personal.clippy ignoreEvents -bool true`).
 enum K {
     static let historySize = "historySize"
     static let ignoreEvents = "ignoreEvents"
@@ -115,6 +115,7 @@ enum Prefs {
     ]
 
     static func registerDefaults() {
+        migrateFromClipStash()
         migrateV1()
         d.register(defaults: [
             K.historySize: 200,
@@ -146,7 +147,24 @@ enum Prefs {
         ])
     }
 
-    /// Carry over settings from the first version of ClipStash.
+    /// The app used to be called ClipStash: move its history folder and settings over once.
+    /// Runs before defaults are registered and before the history store loads.
+    private static func migrateFromClipStash() {
+        let fm = FileManager.default
+        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let oldDir = base.appendingPathComponent("ClipStash")
+        let newDir = base.appendingPathComponent("Clippy")
+        if fm.fileExists(atPath: oldDir.path) && !fm.fileExists(atPath: newDir.path) {
+            try? fm.moveItem(at: oldDir, to: newDir)
+        }
+        guard !d.bool(forKey: "migratedFromClipStash") else { return }
+        for (k, v) in d.persistentDomain(forName: "local.personal.clipstash") ?? [:] where d.object(forKey: k) == nil {
+            d.set(v, forKey: k)
+        }
+        d.set(true, forKey: "migratedFromClipStash")
+    }
+
+    /// Carry over settings from the first version of Clippy.
     private static func migrateV1() {
         for (old, new) in [("maxItems", K.historySize), ("autoPaste", K.pasteAutomatically), ("paused", K.ignoreEvents)] {
             if let v = d.object(forKey: old) {

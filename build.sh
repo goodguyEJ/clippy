@@ -1,26 +1,26 @@
 #!/bin/zsh
-# Builds ClipStash.app next to this script.
+# Builds Clippy.app next to this script.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-APP="build/ClipStash.app"
+APP="build/Clippy.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -swift-version 5 \
   -target "$(uname -m)-apple-macos14.0" \
   -framework AppKit -framework SwiftUI -framework Carbon -framework ServiceManagement \
-  Sources/*.swift -o "$APP/Contents/MacOS/ClipStash"
+  Sources/*.swift -o "$APP/Contents/MacOS/Clippy"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>ClipStash</string>
-  <key>CFBundleDisplayName</key><string>ClipStash</string>
-  <key>CFBundleIdentifier</key><string>local.personal.clipstash</string>
-  <key>CFBundleExecutable</key><string>ClipStash</string>
+  <key>CFBundleName</key><string>Clippy</string>
+  <key>CFBundleDisplayName</key><string>Clippy</string>
+  <key>CFBundleIdentifier</key><string>local.personal.clippy</string>
+  <key>CFBundleExecutable</key><string>Clippy</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>2.0</string>
   <key>CFBundleVersion</key><string>2</string>
@@ -31,8 +31,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
   <key>CFBundleURLTypes</key>
   <array>
     <dict>
-      <key>CFBundleURLName</key><string>local.personal.clipstash</string>
-      <key>CFBundleURLSchemes</key><array><string>clipstash</string></array>
+      <key>CFBundleURLName</key><string>local.personal.clippy</string>
+      <key>CFBundleURLSchemes</key><array><string>clippy</string></array>
     </dict>
   </array>
 </dict>

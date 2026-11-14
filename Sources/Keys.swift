@@ -91,7 +91,7 @@ final class HotKeyCenter {
         installHandler()
         unregister()
         var r: EventHotKeyRef?
-        let id = EventHotKeyID(signature: OSType(0x434C5354), id: 1) // 'CLST'
+        let id = EventHotKeyID(signature: OSType(0x434C5059), id: 1) // 'CLPY'
         let status = RegisterEventHotKey(UInt32(want.0), UInt32(want.1), id, GetApplicationEventTarget(), 0, &r)
         registrationFailed = status != noErr
         if !registrationFailed { ref = r; current = want }
@@ -170,11 +170,11 @@ struct HotKeyRecorder: View {
 // MARK: - Paste simulation (needs Accessibility permission)
 
 enum Paster {
-    /// `app` is where the user was before opening the popup; nil means ClipStash's own window.
+    /// `app` is where the user was before opening the popup; nil means Clippy's own window.
     static func paste(into app: NSRunningApplication?) {
         guard AXIsProcessTrusted() else { askForAccessibility(); return }
         // Usual case: the popup never took focus, so the target app is still in front.
-        // Also covers pasting into ClipStash's own Settings window (app == nil).
+        // Also covers pasting into Clippy's own Settings window (app == nil).
         guard NSApp.isActive, let app else {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { pressCmdV() }
             return
@@ -202,14 +202,14 @@ enum Paster {
         }
     }
 
-    /// One-time explanation; afterwards ClipStash quietly falls back to copy-only.
+    /// One-time explanation; afterwards Clippy quietly falls back to copy-only.
     static func askForAccessibility() {
         guard !Prefs.d.bool(forKey: K.axPromptShown) else { return }
         Prefs.d.set(true, forKey: K.axPromptShown)
         NSApp.activate()
         let a = NSAlert()
-        a.messageText = "Let ClipStash paste for you?"
-        a.informativeText = "The item is on your clipboard now, so ⌘V will paste it.\n\nTo paste automatically, turn on ClipStash in System Settings → Privacy & Security → Accessibility. ClipStash only uses this to press ⌘V and to find the text cursor."
+        a.messageText = "Let Clippy paste for you?"
+        a.informativeText = "The item is on your clipboard now, so ⌘V will paste it.\n\nTo paste automatically, turn on Clippy in System Settings → Privacy & Security → Accessibility. Clippy only uses this to press ⌘V and to find the text cursor."
         a.addButton(withTitle: "Open Settings")
         a.addButton(withTitle: "Not Now")
         if a.runModal() == .alertFirstButtonReturn { openAccessibilitySettings() }

@@ -1,4 +1,4 @@
-// ClipStash — a lightweight clipboard history for the macOS menu bar. Personal use.
+// Clippy — a lightweight clipboard history for the macOS menu bar. Personal use.
 // Build with ./build.sh
 
 import AppKit
@@ -88,13 +88,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let item = statusItem, let b = item.button else { return }
         item.isVisible = !Prefs.hideMenuBarIcon
         let paused = Prefs.ignoreEvents, skipNext = Prefs.ignoreOnlyNextEvent
-        let img = NSImage(systemSymbolName: Prefs.menuIcon.symbol, accessibilityDescription: "ClipStash")
+        let img = NSImage(systemSymbolName: Prefs.menuIcon.symbol, accessibilityDescription: "Clippy")
         img?.isTemplate = true
         b.image = img
         b.appearsDisabled = paused || skipNext
-        b.toolTip = paused ? "ClipStash: recording paused (⌥-click to resume)"
-            : skipNext ? "ClipStash: ignoring the next copy"
-            : "ClipStash (\(HotKeyFormat.string(code: Prefs.hotKeyCode, mods: Prefs.hotKeyMods)))"
+        b.toolTip = paused ? "Clippy: recording paused (⌥-click to resume)"
+            : skipNext ? "Clippy: ignoring the next copy"
+            : "Clippy (\(HotKeyFormat.string(code: Prefs.hotKeyCode, mods: Prefs.hotKeyMods)))"
         if Prefs.showRecentInMenuBar, let latest = HistoryStore.shared.sorted(.lastCopiedAt).first {
             let t = Display.title(latest, special: false)
             b.title = " " + (t.count > 24 ? String(t.prefix(23)) + "…" : t)
@@ -123,8 +123,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(withTitle: "Ignore Next Copy", action: #selector(toggleIgnoreNext), keyEquivalent: "").state = Prefs.ignoreOnlyNextEvent ? .on : .off
         m.addItem(.separator())
         m.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        m.addItem(withTitle: "About ClipStash", action: #selector(about), keyEquivalent: "")
-        m.addItem(withTitle: "Quit ClipStash", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        m.addItem(withTitle: "About Clippy", action: #selector(about), keyEquivalent: "")
+        m.addItem(withTitle: "Quit Clippy", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         for mi in m.items where mi.action != #selector(NSApplication.terminate(_:)) { mi.target = self }
 
         statusItem.menu = m
@@ -143,7 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HistoryStore.shared.write([it], plain: Prefs.pasteWithoutFormatting)
     }
 
-    // MARK: URL scheme: clipstash://open | settings | pause | resume
+    // MARK: URL scheme: clippy://open | settings | pause | resume
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
@@ -163,10 +163,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About ClipStash", action: #selector(about), keyEquivalent: "").target = self
+        appMenu.addItem(withTitle: "About Clippy", action: #selector(about), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit ClipStash", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit Clippy", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let appItem = NSMenuItem()
         appItem.submenu = appMenu
         main.addItem(appItem)
@@ -203,8 +203,8 @@ if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bu
     app.setActivationPolicy(.accessory)
     NSApp.activate()
     let a = NSAlert()
-    a.messageText = "ClipStash is already running"
-    a.informativeText = "Quit the other copy first: right-click its menu bar icon and choose Quit ClipStash."
+    a.messageText = "Clippy is already running"
+    a.informativeText = "Quit the other copy first: right-click its menu bar icon and choose Quit Clippy."
     a.runModal()
     exit(0)
 }

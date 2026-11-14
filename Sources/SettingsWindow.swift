@@ -11,7 +11,7 @@ final class SettingsWindowController {
     func show() {
         if window == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
-            w.title = "ClipStash Settings"
+            w.title = "Clippy Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.center()
@@ -66,7 +66,7 @@ struct GeneralTab: View {
                     }
                 }
                 if let loginError { Caption(loginError) }
-                LabeledContent("Open ClipStash") { HotKeyRecorder() }
+                LabeledContent("Open Clippy") { HotKeyRecorder() }
             }
             Section("Search") {
                 Picker("Search mode", selection: $searchMode) {
@@ -89,7 +89,7 @@ struct GeneralTab: View {
                     }
                 }
                 Button("Open Accessibility Settings…") { Paster.openAccessibilitySettings() }
-                Caption("Needed only to paste automatically and to open the popup at the text cursor. After rebuilding ClipStash, macOS may ask again.")
+                Caption("Needed only to paste automatically and to open the popup at the text cursor. After rebuilding Clippy, macOS may ask again.")
             }
         }
         .formStyle(.grouped)
@@ -230,7 +230,7 @@ struct AppearanceTab: View {
                 .pickerStyle(.segmented)
                 Toggle("Show latest copy next to the icon", isOn: $showRecent)
                 Toggle("Hide menu bar icon", isOn: $hideIcon)
-                if hideIcon { Caption("Use the shortcut to open ClipStash. Open the app again from Finder to get back to Settings.") }
+                if hideIcon { Caption("Use the shortcut to open Clippy. Open the app again from Finder to get back to Settings.") }
             }
         }
         .formStyle(.grouped)
@@ -442,10 +442,10 @@ struct AdvancedTab: View {
             }
             Section("Scripting") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("defaults write local.personal.clipstash ignoreEvents -bool true")
-                    Text("defaults write local.personal.clipstash ignoreOnlyNextEvent -bool true")
-                    Text("defaults write local.personal.clipstash historySize -int 500")
-                    Text("open clipstash://open    (also: settings, pause, resume)")
+                    Text("defaults write local.personal.clippy ignoreEvents -bool true")
+                    Text("defaults write local.personal.clippy ignoreOnlyNextEvent -bool true")
+                    Text("defaults write local.personal.clippy historySize -int 500")
+                    Text("open clippy://open    (also: settings, pause, resume)")
                 }
                 .font(.system(size: 11, design: .monospaced))
                 .textSelection(.enabled)
