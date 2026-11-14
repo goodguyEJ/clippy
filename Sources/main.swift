@@ -57,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         if Prefs.clearOnQuit { HistoryStore.shared.clear(includePins: false) }
-        HistoryStore.shared.saveNow()
+        HistoryStore.shared.saveNow(sync: true)
     }
 
     private func prefsChanged() {
@@ -195,6 +195,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 Prefs.registerDefaults()
 let app = NSApplication.shared
+
+// One copy at a time: two instances would overwrite each other's history and delete each other's files.
+// This runs before anything touches the history store.
+if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+    .contains(where: { $0.processIdentifier != getpid() }) {
+    app.setActivationPolicy(.accessory)
+    NSApp.activate()
+    let a = NSAlert()
+    a.messageText = "ClipStash is already running"
+    a.informativeText = "Quit the other copy first: right-click its menu bar icon and choose Quit ClipStash."
+    a.runModal()
+    exit(0)
+}
 let delegate = AppDelegate()
 app.delegate = delegate
 app.setActivationPolicy(.accessory)

@@ -37,6 +37,8 @@ final class PopupModel: ObservableObject {
 
     private var anchor = 0
     private var lowered: [UUID: String] = [:]
+    private var loweredShort: [UUID: String] = [:]
+    private var lastMouse = NSEvent.mouseLocation
     private var sub: AnyCancellable?
 
     init() {
@@ -48,9 +50,13 @@ final class PopupModel: ObservableObject {
 
     func refresh(resetCursor: Bool) {
         let all = HistoryStore.shared.sorted(Prefs.sortBy)
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        let regex = (look.mode == .regexp || look.mode == .mixed) && !q.isEmpty
-            ? try? NSRegularExpression(pattern: q, options: [.caseInsensitive]) : nil
+        let raw = query.trimmingCharacters(in: .whitespaces)
+        let q = raw.lowercased()
+        // Compile from the text as typed: lowercasing would turn \S into \s, \D into \d, etc.
+        let regex = (look.mode == .regexp || look.mode == .mixed) && !raw.isEmpty
+            ? try? NSRegularExpression(pattern: raw, options: [.caseInsensitive]) : nil
+        let prevCursorID = rows.indices.contains(cursor) ? rows[cursor].id : nil
+        let prevAnchorID = rows.indices.contains(anchor) ? rows[anchor].id : nil
 
         func filter(_ list: [ClipItem]) -> [ClipItem] {
             guard !q.isEmpty else { return list }
@@ -61,7 +67,12 @@ final class PopupModel: ObservableObject {
                     hay = String(it.searchText.prefix(10_000)).lowercased()
                     lowered[it.id] = hay
                 }
-                if let s = Search.score(hay, q, mode: look.mode, regex: regex) { scored.append((it, s, i)) }
+                let short: String
+                if let cached = loweredShort[it.id] { short = cached } else {
+                    short = String(hay.prefix(2_000))
+                    loweredShort[it.id] = short
+                }
+                if let s = Search.score(hay, short, q, mode: look.mode, regex: regex) { scored.append((it, s, i)) }
             }
             return scored.sorted { $0.score != $1.score ? $0.score > $1.score : $0.order < $1.order }.map(\.item)
         }
@@ -77,10 +88,14 @@ final class PopupModel: ObservableObject {
             let firstHistory = (look.pinsOnTop && q.isEmpty && !histRows.isEmpty) ? pins.count : 0
             setCursor(firstHistory, extend: false)
         } else {
+            // Keep the cursor and selection anchor on the same items after deletes, pins or new copies.
             let ids = Set(rows.map(\.id))
             selection = selection.intersection(ids)
-            cursor = min(cursor, max(0, rows.count - 1))
+            let last = max(0, rows.count - 1)
+            cursor = prevCursorID.flatMap { id in rows.firstIndex { $0.id == id } } ?? min(cursor, last)
+            anchor = prevAnchorID.flatMap { id in rows.firstIndex { $0.id == id } } ?? cursor
             if selection.isEmpty, rows.indices.contains(cursor) { selection = [rows[cursor].id] }
+            if current?.id != prevCursorID { onCursorChange?(current) }
         }
     }
 
@@ -92,7 +107,8 @@ final class PopupModel: ObservableObject {
         let c = max(0, min(rows.count - 1, i))
         cursor = c
         if extend {
-            let lo = min(anchor, c), hi = max(anchor, c)
+            let a = min(max(anchor, 0), rows.count - 1)
+            let lo = min(a, c), hi = max(a, c)
             selection = Set(rows[lo...hi].map(\.id))
         } else {
             anchor = c
@@ -104,7 +120,12 @@ final class PopupModel: ObservableObject {
 
     func move(_ delta: Int, extend: Bool) { setCursor(cursor + delta, extend: extend) }
 
+    /// Follows the mouse only when it actually moved, so rows scrolling under a still
+    /// pointer (keyboard navigation, or opening at the cursor) don't steal the selection.
     func hover(_ i: Int) {
+        let m = NSEvent.mouseLocation
+        guard m != lastMouse else { return }
+        lastMouse = m
         guard selection.count <= 1, i != cursor else { return }
         setCursor(i, extend: false, scroll: false)
     }
@@ -272,7 +293,7 @@ struct RowView: View {
 
     private func highlighted(_ s: String) -> Text {
         var a = AttributedString(s)
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = query.trimmingCharacters(in: .whitespaces)
         if !q.isEmpty {
             for r in Search.ranges(in: s, query: q, mode: look.mode) {
                 guard let ar = Range(r, in: a) else { continue }
@@ -313,7 +334,7 @@ final class PopupPanel: NSPanel {
 
 final class PopupController: NSObject, NSWindowDelegate {
     private var panel: PopupPanel?
-    private var model = PopupModel()
+    private lazy var model = PopupModel()
     private var previousApp: NSRunningApplication?
     private let preview = PreviewController()
     var statusItemFrame: () -> NSRect? = { nil }
@@ -328,7 +349,8 @@ final class PopupController: NSObject, NSWindowDelegate {
     func show(fromStatusItem: Bool = false) {
         if isOpen { panel?.makeKeyAndOrderFront(nil); return }
         let front = NSWorkspace.shared.frontmostApplication
-        if front?.bundleIdentifier != Bundle.main.bundleIdentifier { previousApp = front }
+        // nil means ClipStash itself (e.g. its Settings window) is the paste target.
+        previousApp = front?.processIdentifier == getpid() ? nil : front
         let caret = (!fromStatusItem && Prefs.popupPosition == .caret) ? Caret.rect() : nil
 
         model = PopupModel()
@@ -461,11 +483,20 @@ final class PopupController: NSObject, NSWindowDelegate {
         }
     }
 
+    private static let digitKeys: [Int: Int] = [
+        kVK_ANSI_1: 1, kVK_ANSI_2: 2, kVK_ANSI_3: 3, kVK_ANSI_4: 4, kVK_ANSI_5: 5,
+        kVK_ANSI_6: 6, kVK_ANSI_7: 7, kVK_ANSI_8: 8, kVK_ANSI_9: 9,
+        kVK_ANSI_Keypad1: 1, kVK_ANSI_Keypad2: 2, kVK_ANSI_Keypad3: 3, kVK_ANSI_Keypad4: 4, kVK_ANSI_Keypad5: 5,
+        kVK_ANSI_Keypad6: 6, kVK_ANSI_Keypad7: 7, kVK_ANSI_Keypad8: 8, kVK_ANSI_Keypad9: 9,
+    ]
+
     private func handleKey(_ e: NSEvent) -> Bool {
         let f = e.modifierFlags.intersection(.deviceIndependentFlagsMask)
         let cmd = f.contains(.command), opt = f.contains(.option), shift = f.contains(.shift), ctrl = f.contains(.control)
         let ch = e.charactersIgnoringModifiers?.lowercased() ?? ""
         let last = model.rows.count - 1
+        // Let an input method (Japanese, Chinese, accents…) finish composing before ↩, ⎋ or arrows act as commands.
+        if let tv = panel?.firstResponder as? NSTextView, tv.hasMarkedText() { return false }
 
         switch Int(e.keyCode) {
         case kVK_DownArrow: cmd ? model.setCursor(last, extend: shift) : model.move(1, extend: shift); return true
@@ -501,14 +532,18 @@ final class PopupController: NSObject, NSWindowDelegate {
 
         if opt && !cmd && !ctrl && ch.count == 1 {
             if ch == "p" { HistoryStore.shared.togglePin(model.selectedItems.map(\.id)); return true }
-            if let row = model.rows.first(where: { $0.item.pin == ch }) { perform([row.item], flags: []); return true }
+            if let row = model.rows.first(where: { $0.item.pin == ch }) {
+                perform([row.item], flags: shift ? [.option, .shift] : [])   // ⌥⇧+letter = paste with formatting inverted
+                return true
+            }
         }
 
         if cmd && !ctrl {
-            if let n = Int(ch), (1...9).contains(n) {
+            // Physical number keys, so this works on AZERTY and other layouts too.
+            if let n = Self.digitKeys[Int(e.keyCode)] {
                 if model.numbered.indices.contains(n - 1),
                    let item = model.rows.first(where: { $0.id == model.numbered[n - 1] })?.item {
-                    perform([item], flags: opt ? [.option] : [])
+                    perform([item], flags: f.intersection([.option, .shift]))
                 }
                 return true
             }
@@ -627,7 +662,7 @@ struct PreviewView: View {
                 if item.isRich { meta("Format", "Rich text") }
             }
             .font(.system(size: 11))
-            Text("⌥P \(item.pinned ? "unpin" : "pin")  ·  ⌥⌫ delete  ·  ⌥⇧↩ paste without formatting")
+            Text("⌥P \(item.pinned ? "unpin" : "pin")  ·  ⌥⌫ delete  ·  ⌥⇧↩ paste \(Prefs.pasteWithoutFormatting ? "with" : "without") formatting")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }

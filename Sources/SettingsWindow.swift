@@ -45,7 +45,7 @@ private struct Caption: View {
 // MARK: - General
 
 struct GeneralTab: View {
-    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var loginStatus = SMAppService.mainApp.status
     @State private var loginError: String?
     @State private var axTrusted = AXIsProcessTrusted()
     @AppStorage(K.searchMode) private var searchMode: SearchMode = .exact
@@ -56,16 +56,15 @@ struct GeneralTab: View {
     var body: some View {
         Form {
             Section {
-                Toggle("Launch at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, on in
-                        do {
-                            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-                            loginError = nil
-                        } catch {
-                            loginError = error.localizedDescription
-                            launchAtLogin = SMAppService.mainApp.status == .enabled
-                        }
+                Toggle("Launch at login", isOn: Binding(
+                    get: { loginStatus == .enabled || loginStatus == .requiresApproval },
+                    set: { setLaunchAtLogin($0) }))
+                if loginStatus == .requiresApproval {
+                    HStack {
+                        Caption("Waiting for your approval in System Settings → General → Login Items.")
+                        Button("Open") { SMAppService.openSystemSettingsLoginItems() }.buttonStyle(.link)
                     }
+                }
                 if let loginError { Caption(loginError) }
                 LabeledContent("Open ClipStash") { HotKeyRecorder() }
             }
@@ -94,7 +93,20 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-        .onReceive(timer) { _ in axTrusted = AXIsProcessTrusted() }
+        .onReceive(timer) { _ in
+            axTrusted = AXIsProcessTrusted()
+            loginStatus = SMAppService.mainApp.status
+        }
+    }
+
+    private func setLaunchAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            loginError = nil
+        } catch {
+            loginError = error.localizedDescription
+        }
+        loginStatus = SMAppService.mainApp.status
     }
 }
 
@@ -106,6 +118,7 @@ struct StorageTab: View {
     @AppStorage(K.saveFiles) private var saveFiles = true
     @AppStorage(K.historySize) private var size = 200
     @AppStorage(K.sortBy) private var sortBy: SortBy = .lastCopiedAt
+    @State private var draft = 200
 
     var body: some View {
         Form {
@@ -117,14 +130,19 @@ struct StorageTab: View {
             Section("History") {
                 LabeledContent("Keep") {
                     HStack {
-                        TextField("", value: $size, format: .number)
+                        TextField("", value: $draft, format: .number)
                             .frame(width: 60)
                             .multilineTextAlignment(.trailing)
-                        Stepper("", value: $size, in: 1...999).labelsHidden()
+                            .onSubmit { applySize() }
+                        Stepper("", value: $draft, in: 1...999).labelsHidden()
                         Text("items")
+                        if draft != size {
+                            Button("Apply") { applySize() }
+                            Button("Cancel") { draft = size }.buttonStyle(.borderless)
+                        }
                     }
                 }
-                Caption("1–999. Pinned items don't count toward this.")
+                Caption("1–999. Pinned items don't count toward this. You'll be asked before anything is removed.")
                 Picker("Sort by", selection: $sortBy) {
                     ForEach(SortBy.allCases) { Text($0.label).tag($0) }
                 }
@@ -135,6 +153,24 @@ struct StorageTab: View {
             }
         }
         .formStyle(.grouped)
+        .onAppear { draft = size }
+    }
+
+    private func applySize() {
+        let newSize = min(999, max(1, draft))
+        draft = newSize
+        guard newSize != size else { return }
+        let excess = HistoryStore.shared.unpinnedCount - newSize
+        if excess > 0 {
+            let a = NSAlert()
+            a.messageText = "Remove the \(excess) oldest item\(excess == 1 ? "" : "s")?"
+            a.informativeText = "History currently has \(HistoryStore.shared.unpinnedCount) unpinned items. Pinned items are kept. This can't be undone."
+            a.addButton(withTitle: "Remove")
+            a.addButton(withTitle: "Cancel")
+            a.buttons.first?.hasDestructiveAction = true
+            guard a.runModal() == .alertFirstButtonReturn else { draft = size; return }
+        }
+        size = newSize
     }
 }
 
@@ -337,7 +373,7 @@ struct StringListEditor: View {
     private func row(_ i: Int) -> some View {
         switch kind {
         case .apps:
-            let bid = values[i]
+            let bid = values.indices.contains(i) ? values[i] : ""
             HStack(spacing: 6) {
                 if let icon = Display.appIcon(bid) { Image(nsImage: icon).resizable().frame(width: 16, height: 16) }
                 Text(Display.appName(bid))

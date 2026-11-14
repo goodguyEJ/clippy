@@ -170,13 +170,28 @@ struct HotKeyRecorder: View {
 // MARK: - Paste simulation (needs Accessibility permission)
 
 enum Paster {
+    /// `app` is where the user was before opening the popup; nil means ClipStash's own window.
     static func paste(into app: NSRunningApplication?) {
         guard AXIsProcessTrusted() else { askForAccessibility(); return }
-        if NSApp.isActive {
-            NSApp.hide(nil)
-            app?.activate()
+        // Usual case: the popup never took focus, so the target app is still in front.
+        // Also covers pasting into ClipStash's own Settings window (app == nil).
+        guard NSApp.isActive, let app else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { pressCmdV() }
+            return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { pressCmdV() }
+        NSApp.hide(nil)
+        app.activate()
+        pasteWhenFrontmost(app, triesLeft: 40)
+    }
+
+    /// Waits (up to ~1 s) for `app` to really be in front. Never sends ⌘V to a different app;
+    /// if activation doesn't happen, the item simply stays on the clipboard.
+    private static func pasteWhenFrontmost(_ app: NSRunningApplication, triesLeft: Int) {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { pressCmdV() }
+        } else if triesLeft > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025) { pasteWhenFrontmost(app, triesLeft: triesLeft - 1) }
+        }
     }
 
     static func openAccessibilitySettings() {

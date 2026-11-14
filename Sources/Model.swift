@@ -56,6 +56,37 @@ struct ClipItem: Codable, Identifiable, Equatable {
     static func textKey(_ s: String) -> String { "t:" + sha256(Data(s.utf8)) }
 }
 
+extension ClipItem {
+    /// Tolerant decoding: missing fields fall back to defaults, so adding a field later
+    /// never makes an existing history file unreadable.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let now = Date()
+        self.init(
+            id: (try? c.decodeIfPresent(UUID.self, forKey: .id)) ?? UUID(),
+            kind: try c.decode(Kind.self, forKey: .kind),
+            text: try? c.decodeIfPresent(String.self, forKey: .text),
+            fileURLs: try? c.decodeIfPresent([String].self, forKey: .fileURLs),
+            contents: ((try? c.decodeIfPresent([ClipContent].self, forKey: .contents)) ?? nil) ?? [],
+            firstCopiedAt: ((try? c.decodeIfPresent(Date.self, forKey: .firstCopiedAt)) ?? nil) ?? now,
+            lastCopiedAt: ((try? c.decodeIfPresent(Date.self, forKey: .lastCopiedAt)) ?? nil) ?? now,
+            numberOfCopies: ((try? c.decodeIfPresent(Int.self, forKey: .numberOfCopies)) ?? nil) ?? 1,
+            pinned: ((try? c.decodeIfPresent(Bool.self, forKey: .pinned)) ?? nil) ?? false,
+            pin: try? c.decodeIfPresent(String.self, forKey: .pin),
+            title: try? c.decodeIfPresent(String.self, forKey: .title),
+            application: try? c.decodeIfPresent(String.self, forKey: .application),
+            appName: try? c.decodeIfPresent(String.self, forKey: .appName),
+            key: ((try? c.decodeIfPresent(String.self, forKey: .key)) ?? nil) ?? "")
+        if key.isEmpty {
+            switch kind {
+            case .text: key = ClipItem.textKey(text ?? "")
+            case .file: key = "f:" + (fileURLs ?? []).joined(separator: "|")
+            case .image: key = "i:" + (imageBlob ?? id.uuidString)
+            }
+        }
+    }
+}
+
 final class HistoryStore: ObservableObject {
     static let shared = HistoryStore()
     static let pinLetters = "abcdefghijklmnoqrstuvwxyz".map(String.init)   // 'p' is reserved for ⌥P
@@ -67,6 +98,7 @@ final class HistoryStore: ObservableObject {
     let blobsDir: URL
     private var file: URL { dir.appendingPathComponent("history-v2.json") }
     private var saveWork: DispatchWorkItem?
+    private let ioQueue = DispatchQueue(label: "local.personal.clipstash.save", qos: .utility)
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -74,18 +106,40 @@ final class HistoryStore: ObservableObject {
         blobsDir = dir.appendingPathComponent("blobs", isDirectory: true)
         try? FileManager.default.createDirectory(at: blobsDir, withIntermediateDirectories: true)
         load()
-        gcBlobs()   // drop files left behind by crashes or manual edits
+        gcBlobs()   // drop files left behind by crashes or manual edits (backups are respected)
     }
+
+    var unpinnedCount: Int { items.lazy.filter { !$0.pinned }.count }
 
     // MARK: Persistence
 
+    /// Decodes one item without failing the whole array.
+    private struct Failable: Decodable {
+        let item: ClipItem?
+        init(from decoder: Decoder) { item = try? ClipItem(from: decoder) }
+    }
+
     private func load() {
-        if let data = try? Data(contentsOf: file),
-           let decoded = try? JSONDecoder().decode([ClipItem].self, from: data) {
-            items = decoded
-            return
+        guard FileManager.default.fileExists(atPath: file.path) else { migrateV1(); return }
+        do {
+            let data = try Data(contentsOf: file)
+            let decoded = try JSONDecoder().decode([Failable].self, from: data)
+            items = decoded.compactMap(\.item)
+            if items.count < decoded.count {
+                backupHistoryFile(reason: "partial")
+                NSLog("ClipStash: \(decoded.count - items.count) history items couldn't be read; original kept as a backup")
+            }
+        } catch {
+            // Never start over silently: keep the original file next to the new one.
+            backupHistoryFile(reason: "unreadable")
+            NSLog("ClipStash: history file couldn't be read (\(error)); original kept as a backup")
         }
-        migrateV1()
+    }
+
+    private func backupHistoryFile(reason: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        let dest = dir.appendingPathComponent("history-v2.\(reason)-\(stamp).json")
+        try? FileManager.default.copyItem(at: file, to: dest)
     }
 
     private struct LegacyItem: Decodable {
@@ -120,16 +174,23 @@ final class HistoryStore: ObservableObject {
         }
         items = out
         for i in items.indices where items[i].pinned { items[i].pin = nextFreeLetter() }
-        saveNow()
+        saveNow(sync: true)
         try? FileManager.default.removeItem(at: old)
         try? FileManager.default.removeItem(at: oldImages)
     }
 
-    func saveNow() {
+    /// Encodes and writes on a background queue so large histories never stall the UI.
+    /// `sync: true` is for quitting, when the write must finish first.
+    func saveNow(sync: Bool = false) {
         saveWork?.cancel()
         saveWork = nil
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        try? data.write(to: file, options: .atomic)
+        let snapshot = items
+        let target = file
+        let job = {
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: target, options: .atomic)
+        }
+        if sync { ioQueue.sync(execute: job) } else { ioQueue.async(execute: job) }
     }
 
     private func scheduleSave() {
@@ -141,10 +202,13 @@ final class HistoryStore: ObservableObject {
 
     // MARK: Blobs
 
+    func blobName(for data: Data) -> String { String(sha256(data).prefix(32)) + ".bin" }
+
     func putBlob(_ data: Data) -> String {
-        let name = String(sha256(data).prefix(32)) + ".bin"
+        let name = blobName(for: data)
         let url = blobsDir.appendingPathComponent(name)
-        if !FileManager.default.fileExists(atPath: url.path) { try? data.write(to: url) }
+        let existing = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
+        if existing != data.count { try? data.write(to: url, options: .atomic) }   // also repairs a truncated file
         return name
     }
 
@@ -152,25 +216,47 @@ final class HistoryStore: ObservableObject {
     func blobData(_ name: String) -> Data? { try? Data(contentsOf: blobURL(name)) }
 
     private func gcBlobs() {
-        let used = Set(items.flatMap { $0.contents.map(\.blob) })
+        var used = Set(items.flatMap { $0.contents.map(\.blob) })
+        used.formUnion(blobsReferencedByBackups())
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: blobsDir.path) else { return }
         for f in files where !used.contains(f) {
             try? FileManager.default.removeItem(at: blobsDir.appendingPathComponent(f))
         }
     }
 
+    /// Blobs named in backup history files are kept, so a backup can still be restored by hand.
+    private func blobsReferencedByBackups() -> Set<String> {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
+              let re = try? NSRegularExpression(pattern: "[0-9a-f]{32}\\.bin") else { return [] }
+        var out = Set<String>()
+        for f in files where f.hasPrefix("history-v2.") && f != "history-v2.json" {
+            guard let s = try? String(contentsOf: dir.appendingPathComponent(f), encoding: .utf8) else { continue }
+            for m in re.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
+                if let r = Range(m.range, in: s) { out.insert(String(s[r])) }
+            }
+        }
+        return out
+    }
+
     // MARK: Mutations
 
-    func record(_ new: ClipItem) {
+    /// `blobs` are extra representations; they're only written to disk when actually stored.
+    func record(_ new: ClipItem, blobs: [(type: String, data: Data)] = []) {
         if let i = items.firstIndex(where: { $0.key == new.key }) {
             items[i].lastCopiedAt = Date()
             items[i].numberOfCopies += 1
-            if items[i].contents.isEmpty && !new.contents.isEmpty { items[i].contents = new.contents }
+            if items[i].contents.isEmpty && !blobs.isEmpty { items[i].contents = storeBlobs(blobs) }
         } else {
-            items.append(new)
+            var item = new
+            if !blobs.isEmpty { item.contents = storeBlobs(blobs) }
+            items.append(item)
         }
         enforceLimit()
         scheduleSave()
+    }
+
+    private func storeBlobs(_ blobs: [(type: String, data: Data)]) -> [ClipContent] {
+        blobs.map { ClipContent(type: $0.type, blob: putBlob($0.data)) }
     }
 
     func bump(_ id: UUID) {
@@ -184,9 +270,10 @@ final class HistoryStore: ObservableObject {
         let limit = Prefs.historySize
         let unpinned = items.filter { !$0.pinned }.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
         guard unpinned.count > limit else { return }
-        let drop = Set(unpinned[limit...].map(\.id))
+        let dropped = unpinned[limit...]
+        let drop = Set(dropped.map(\.id))
         items.removeAll { drop.contains($0.id) }
-        gcBlobs()
+        if dropped.contains(where: { !$0.contents.isEmpty }) { gcBlobs() }
         scheduleSave()
     }
 
@@ -201,12 +288,14 @@ final class HistoryStore: ObservableObject {
     }
 
     func delete(_ ids: Set<UUID>) {
+        let hadBlobs = items.contains { ids.contains($0.id) && !$0.contents.isEmpty }
         items.removeAll { ids.contains($0.id) }
-        gcBlobs()
+        if hadBlobs { gcBlobs() }
         scheduleSave()
     }
 
     /// Pins all given items if any is unpinned; otherwise unpins them all.
+    /// An unpinned item counts as just used, so it isn't evicted straight away as the "oldest" item.
     func togglePin(_ ids: [UUID]) {
         let pinning = ids.contains { id in items.first { $0.id == id }?.pinned == false }
         for id in ids {
@@ -214,10 +303,12 @@ final class HistoryStore: ObservableObject {
             if pinning {
                 if !items[i].pinned { items[i].pinned = true; items[i].pin = nextFreeLetter() }
             } else {
-                items[i].pinned = false; items[i].pin = nil; items[i].title = nil
+                items[i].pinned = false
+                items[i].pin = nil
+                items[i].title = nil
+                items[i].lastCopiedAt = Date()
             }
         }
-        enforceLimit()
         scheduleSave()
     }
 

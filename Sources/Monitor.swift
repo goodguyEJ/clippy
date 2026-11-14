@@ -3,6 +3,25 @@ import AppKit
 final class ClipboardMonitor {
     private var lastChange = NSPasteboard.general.changeCount
     private var timer: Timer?
+    private var lastFront = NSWorkspace.shared.frontmostApplication
+    private var activatedSincePoll: [NSRunningApplication] = []
+    private var observer: NSObjectProtocol?
+
+    init() {
+        // Remember every app that comes to the front between polls: any of them could be
+        // where a copy happened, even if the user switched away before the next poll.
+        observer = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] n in
+            if let app = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                self?.activatedSincePoll.append(app)
+            }
+        }
+    }
+
+    deinit {
+        if let observer { NSWorkspace.shared.notificationCenter.removeObserver(observer) }
+    }
 
     func start() {
         timer?.invalidate()
@@ -15,6 +34,12 @@ final class ClipboardMonitor {
 
     private func check() {
         let pb = NSPasteboard.general
+        let front = NSWorkspace.shared.frontmostApplication
+        let candidates = ([lastFront] + activatedSincePoll + [front]).compactMap { $0 }
+        let source = lastFront ?? front      // the app that was in front when this poll window began
+        lastFront = front
+        activatedSincePoll = []
+
         guard pb.changeCount != lastChange else { return }
         lastChange = pb.changeCount
 
@@ -27,18 +52,28 @@ final class ClipboardMonitor {
             return
         }
         if Prefs.ignoreEvents { return }
-        if Prefs.ignoreOnlyNextEvent { Prefs.ignoreOnlyNextEvent = false; return }
 
         let typeNames = Set(types.map(\.rawValue))
         if !typeNames.isDisjoint(with: Prefs.ignoredTypes) { return }
 
-        let app = NSWorkspace.shared.frontmostApplication
-        let bundleID = app?.bundleIdentifier
-        let listed = bundleID.map { Prefs.ignoredApps.contains($0) } ?? false
-        if Prefs.allowlistMode ? !listed : listed { return }
+        // App rules apply to every app that could have made this copy.
+        let listed = Set(Prefs.ignoredApps)
+        let ownID = Bundle.main.bundleIdentifier
+        let ids = candidates.compactMap(\.bundleIdentifier).filter { $0 != ownID }
+        if Prefs.allowlistMode {
+            guard !ids.isEmpty, ids.allSatisfy(listed.contains) else { return }
+        } else if ids.contains(where: listed.contains) {
+            return
+        }
 
         func make(_ kind: ClipItem.Kind, key: String) -> ClipItem {
-            ClipItem(kind: kind, application: bundleID, appName: app?.localizedName, key: key)
+            ClipItem(kind: kind, application: source?.bundleIdentifier, appName: source?.localizedName, key: key)
+        }
+
+        /// "Ignore next copy" is used up only by a copy that would otherwise have been saved.
+        func commit(_ item: ClipItem, blobs: [(type: String, data: Data)] = []) {
+            if Prefs.ignoreOnlyNextEvent { Prefs.ignoreOnlyNextEvent = false; return }
+            store.record(item, blobs: blobs)
         }
 
         // Files (Finder also puts the file name on the pasteboard as text, so check files first)
@@ -49,7 +84,7 @@ final class ClipboardMonitor {
                 let strs = urls.map(\.absoluteString)
                 var item = make(.file, key: "f:" + strs.joined(separator: "|"))
                 item.fileURLs = strs
-                store.record(item)
+                commit(item)
                 return
             }
         }
@@ -61,12 +96,11 @@ final class ClipboardMonitor {
             if Prefs.ignoreRegexes.contains(where: { $0.firstMatch(in: s, range: range) != nil }) { return }
             var item = make(.text, key: ClipItem.textKey(s))
             item.text = s
+            var blobs: [(type: String, data: Data)] = []
             for t in [NSPasteboard.PasteboardType.rtf, .html] where types.contains(t) {
-                if let data = pb.data(forType: t), data.count < 10_000_000 {
-                    item.contents.append(ClipContent(type: t.rawValue, blob: store.putBlob(data)))
-                }
+                if let data = pb.data(forType: t), data.count < 10_000_000 { blobs.append((t.rawValue, data)) }
             }
-            store.record(item)
+            commit(item, blobs: blobs)
             return
         }
 
@@ -77,10 +111,8 @@ final class ClipboardMonitor {
             png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
         }
         if let png, png.count < 25_000_000 {
-            let blob = store.putBlob(png)
-            var item = make(.image, key: "i:" + blob)
-            item.contents = [ClipContent(type: NSPasteboard.PasteboardType.png.rawValue, blob: blob)]
-            store.record(item)
+            commit(make(.image, key: "i:" + store.blobName(for: png)),
+                   blobs: [(NSPasteboard.PasteboardType.png.rawValue, png)])
         }
     }
 }
