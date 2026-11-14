@@ -91,3 +91,7 @@ open clippy://open        # also: settings, pause, resume
 | `Sources/Keys.swift` | Global shortcut, shortcut recorder, paste, text-cursor lookup |
 | `Sources/SettingsWindow.swift` | Settings tabs |
 | `Sources/Prefs.swift`, `Sources/Display.swift` | Preferences and display helpers |
+
+## License
+
+[MIT](LICENSE)
