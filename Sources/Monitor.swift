@@ -7,7 +7,7 @@ final class ClipboardMonitor {
     private var lastFront = NSWorkspace.shared.frontmostApplication
     private var activatedSincePoll: [NSRunningApplication] = []
     private var observer: NSObjectProtocol?
-    private let captureQueue = DispatchQueue(label: "local.personal.clippy.capture", qos: .utility)
+    private let captureQueue = DispatchQueue(label: "io.github.goodguyej.clipstack.capture", qos: .utility)
 
     private struct Capture {
         var item: ClipItem
@@ -56,7 +56,7 @@ final class ClipboardMonitor {
         let store = HistoryStore.shared
 
         // Our own write: bump the existing item, never create a new one.
-        if types.contains(.clippyOwn) {
+        if types.contains(.clipStackOwn) {
             if let id = store.lastWrittenID { store.bump(id) }
             return
         }

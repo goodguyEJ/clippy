@@ -1,4 +1,4 @@
-// Clippy — a lightweight clipboard history for the macOS menu bar.
+// ClipStack — a lightweight clipboard history for the macOS menu bar.
 // Build with ./build.sh
 
 import AppKit
@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popup.statusItemFrame = { [weak self] in self?.statusItem.button?.window?.frame }
         popup.openSettings = { SettingsWindowController.shared.show() }
         HotKeyCenter.shared.action = { [weak self] in self?.popup.toggle() }
+        HotKeyCenter.shared.onRegistrationChange = { [weak self] in self?.refreshStatusItem() }
         HotKeyCenter.shared.registerIfChanged()
 
         lastHistorySize = Prefs.historySize
@@ -52,6 +53,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { [weak self] _ in self?.refreshStatusItem() }
             .store(in: &subs)
         refreshStatusItem()
+
+        if !Prefs.d.bool(forKey: K.welcomeShown) {
+            Prefs.d.set(true, forKey: K.welcomeShown)
+            WelcomeWindowController.shared.show()
+        }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -76,8 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func prefsChanged() {
-        refreshStatusItem()
         HotKeyCenter.shared.registerIfChanged()
+        refreshStatusItem()
         if Prefs.historySize != lastHistorySize || Prefs.forgetAfterDays != lastForgetDays {
             lastHistorySize = Prefs.historySize
             lastForgetDays = Prefs.forgetAfterDays
@@ -104,13 +110,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let item = statusItem, let b = item.button else { return }
         item.isVisible = !Prefs.hideMenuBarIcon
         let paused = Prefs.ignoreEvents, skipNext = Prefs.ignoreOnlyNextEvent
-        let img = NSImage(systemSymbolName: Prefs.menuIcon.symbol, accessibilityDescription: "Clippy")
+        let img = NSImage(systemSymbolName: Prefs.menuIcon.symbol, accessibilityDescription: "ClipStack")
         img?.isTemplate = true
         b.image = img
         b.appearsDisabled = paused || skipNext
-        b.toolTip = paused ? "Clippy: recording paused (⌥-click to resume)"
-            : skipNext ? "Clippy: ignoring the next copy"
-            : "Clippy (\(HotKeyFormat.string(code: Prefs.hotKeyCode, mods: Prefs.hotKeyMods)))"
+        let shortcut = HotKeyFormat.string(code: Prefs.hotKeyCode, mods: Prefs.hotKeyMods)
+        b.toolTip = HotKeyCenter.shared.registrationFailed ? Paster.hotkeyFailureMessage(shortcut)
+            : paused ? "ClipStack: recording paused (⌥-click to resume)"
+            : skipNext ? "ClipStack: ignoring the next copy"
+            : "ClipStack (\(shortcut))"
         if Prefs.showRecentInMenuBar, let latest = HistoryStore.shared.items.max(by: { $0.lastCopiedAt < $1.lastCopiedAt }) {
             let t = Display.title(latest, special: false)
             b.title = " " + (t.count > 24 ? String(t.prefix(23)) + "…" : t)
@@ -121,6 +129,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showMenu() {
         let m = NSMenu()
+        if HotKeyCenter.shared.registrationFailed {
+            m.addItem(withTitle: "Shortcut unavailable — open Settings…", action: #selector(openSettings), keyEquivalent: "")
+            m.addItem(.separator())
+        }
         let show = m.addItem(withTitle: "Show History", action: #selector(showPopup), keyEquivalent: "")
         show.toolTip = HotKeyFormat.string(code: Prefs.hotKeyCode, mods: Prefs.hotKeyMods)
 
@@ -139,8 +151,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(withTitle: "Ignore Next Copy", action: #selector(toggleIgnoreNext), keyEquivalent: "").state = Prefs.ignoreOnlyNextEvent ? .on : .off
         m.addItem(.separator())
         m.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
-        m.addItem(withTitle: "About Clippy", action: #selector(about), keyEquivalent: "")
-        m.addItem(withTitle: "Quit Clippy", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        m.addItem(withTitle: "Welcome…", action: #selector(showWelcome), keyEquivalent: "")
+        m.addItem(withTitle: "About ClipStack", action: #selector(about), keyEquivalent: "")
+        m.addItem(withTitle: "Quit ClipStack", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         for mi in m.items where mi.action != #selector(NSApplication.terminate(_:)) { mi.target = self }
 
         statusItem.menu = m
@@ -153,13 +166,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggleIgnoreNext() { Prefs.ignoreOnlyNextEvent.toggle() }
     @objc private func openSettings() { SettingsWindowController.shared.show() }
     @objc private func about() { Actions.about() }
+    @objc private func showWelcome() { WelcomeWindowController.shared.show() }
     @objc private func copyRecent(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? UUID,
               let it = HistoryStore.shared.items.first(where: { $0.id == id }) else { return }
         HistoryStore.shared.write([it], plain: Prefs.pasteWithoutFormatting)
     }
 
-    // MARK: URL scheme: clippy://open | settings | pause
+    // MARK: URL scheme: clipstack://open | settings | pause
     // Any app or web page can send these, so none of them may weaken privacy:
     // there is no "resume", and a popup opened by a link never pastes on its own.
 
@@ -180,10 +194,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let main = NSMenu()
 
         let appMenu = NSMenu()
-        appMenu.addItem(withTitle: "About Clippy", action: #selector(about), keyEquivalent: "").target = self
+        appMenu.addItem(withTitle: "About ClipStack", action: #selector(about), keyEquivalent: "").target = self
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",").target = self
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit Clippy", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit ClipStack", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         let appItem = NSMenuItem()
         appItem.submenu = appMenu
         main.addItem(appItem)
@@ -220,8 +234,8 @@ if NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bu
     app.setActivationPolicy(.accessory)
     NSApp.activate()
     let a = NSAlert()
-    a.messageText = "Clippy is already running"
-    a.informativeText = "Quit the other copy first: right-click its menu bar icon and choose Quit Clippy."
+    a.messageText = "ClipStack is already running"
+    a.informativeText = "Quit the other copy first: right-click its menu bar icon and choose Quit ClipStack."
     a.runModal()
     exit(0)
 }

@@ -186,7 +186,7 @@ struct PopupView: View {
     private func header(_ look: PopupLook) -> some View {
         HStack(spacing: 8) {
             if look.showTitle {
-                Text("Clippy").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
+                Text("ClipStack").font(.system(size: 13, weight: .semibold)).foregroundStyle(.secondary)
             }
             if look.showSearch {
                 Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
@@ -367,12 +367,12 @@ final class PopupController: NSObject, NSWindowDelegate {
         isOpen ? close() : show(fromStatusItem: fromStatusItem)
     }
 
-    /// `copyOnly` is for popups opened by a clippy:// link, which any app or page can send.
+    /// `copyOnly` is for popups opened by a clipstack:// link, which any app or page can send.
     func show(fromStatusItem: Bool = false, copyOnly: Bool = false) {
         if isOpen { panel?.makeKeyAndOrderFront(nil); return }
         self.copyOnly = copyOnly
         let front = NSWorkspace.shared.frontmostApplication
-        // nil means Clippy itself (e.g. its Settings window) is the paste target.
+        // nil means ClipStack itself (e.g. its Settings window) is the paste target.
         previousApp = front?.processIdentifier == getpid() ? nil : front
         if front == nil { self.copyOnly = true }    // no known target, so never send ⌘V blind
         let caret = (!fromStatusItem && Prefs.popupPosition == .caret) ? Caret.rect() : nil

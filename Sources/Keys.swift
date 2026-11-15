@@ -75,6 +75,7 @@ enum HotKeyFormat {
 final class HotKeyCenter {
     static let shared = HotKeyCenter()
     var action: (() -> Void)?
+    var onRegistrationChange: (() -> Void)?   // registration also changes outside prefs changes, e.g. when the recorder resumes it
     private(set) var registrationFailed = false
     private var ref: EventHotKeyRef?
     private var installed = false
@@ -95,6 +96,7 @@ final class HotKeyCenter {
         let status = RegisterEventHotKey(UInt32(want.0), UInt32(want.1), id, GetApplicationEventTarget(), 0, &r)
         registrationFailed = status != noErr
         if !registrationFailed { ref = r; current = want }
+        onRegistrationChange?()
     }
 
     private func unregister() {
@@ -170,14 +172,14 @@ struct HotKeyRecorder: View {
 // MARK: - Paste simulation (needs Accessibility permission)
 
 enum Paster {
-    /// `app` is where the user was before opening the popup; nil means Clippy's own window.
+    /// `app` is where the user was before opening the popup; nil means ClipStack's own window.
     static func paste(into app: NSRunningApplication?) {
         guard AXIsProcessTrusted() else { askForAccessibility(); return }
-        guard let app else {    // Clippy's own Settings window is the target
+        guard let app else {    // ClipStack's own Settings window is the target
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { if NSApp.isActive { pressCmdV() } }
             return
         }
-        if NSApp.isActive {     // Clippy became active after the popup opened, so focus has to go back first
+        if NSApp.isActive {     // ClipStack became active after the popup opened, so focus has to go back first
             NSApp.hide(nil)
             app.activate()
         }
@@ -202,14 +204,26 @@ enum Paster {
         }
     }
 
-    /// One-time explanation; afterwards Clippy quietly falls back to copy-only.
+    /// An unsigned or ad-hoc-signed update counts as a new app to macOS, which then drops the permission
+    /// while still showing ClipStack as allowed. So explain once per build, not once ever.
+    static func shouldPromptForAccessibility(lastPromptedVersion: String?, currentVersion: String) -> Bool {
+        lastPromptedVersion != currentVersion
+    }
+
+    static func hotkeyFailureMessage(_ shortcut: String) -> String {
+        "\(shortcut) is used by another app. Choose a different shortcut in Settings."
+    }
+
+    /// Explains once per build; otherwise ClipStack quietly falls back to copy-only.
     static func askForAccessibility() {
-        guard !Prefs.d.bool(forKey: K.axPromptShown) else { return }
-        Prefs.d.set(true, forKey: K.axPromptShown)
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        guard shouldPromptForAccessibility(lastPromptedVersion: Prefs.d.string(forKey: K.axPromptVersion), currentVersion: build)
+        else { return }
+        Prefs.d.set(build, forKey: K.axPromptVersion)
         NSApp.activate()
         let a = NSAlert()
-        a.messageText = "Let Clippy paste for you?"
-        a.informativeText = "The item is on your clipboard now, so ⌘V will paste it.\n\nTo paste automatically, turn on Clippy in System Settings → Privacy & Security → Accessibility. Clippy only uses this to press ⌘V and to find the text cursor."
+        a.messageText = "Let ClipStack paste for you?"
+        a.informativeText = "The item is on your clipboard now, so ⌘V will paste it.\n\nTo paste automatically, turn on ClipStack in System Settings → Privacy & Security → Accessibility. ClipStack only uses this to press ⌘V and to find the text cursor.\n\nIf you just updated ClipStack and auto-paste stopped working, remove ClipStack from the Accessibility list and add it again."
         a.addButton(withTitle: "Open Settings")
         a.addButton(withTitle: "Not Now")
         if a.runModal() == .alertFirstButtonReturn { openAccessibilitySettings() }

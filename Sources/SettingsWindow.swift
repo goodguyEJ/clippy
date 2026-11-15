@@ -11,7 +11,7 @@ final class SettingsWindowController: NSObject, NSWindowDelegate {
     func show() {
         if window == nil {
             let w = NSWindow(contentViewController: NSHostingController(rootView: SettingsView()))
-            w.title = "Clippy Settings"
+            w.title = "ClipStack Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
             w.delegate = self
@@ -69,7 +69,7 @@ struct GeneralTab: View {
                     }
                 }
                 if let loginError { Caption(loginError) }
-                LabeledContent("Open Clippy") { HotKeyRecorder() }
+                LabeledContent("Open ClipStack") { HotKeyRecorder() }
             }
             Section("Search") {
                 Picker("Search mode", selection: $searchMode) {
@@ -92,7 +92,7 @@ struct GeneralTab: View {
                     }
                 }
                 Button("Open Accessibility Settings…") { Paster.openAccessibilitySettings() }
-                Caption("Needed only to paste automatically and to open the popup at the text cursor. After rebuilding Clippy, macOS may ask again.")
+                Caption("Needed only to paste automatically and to open the popup at the text cursor. After updating ClipStack, macOS may ask again.")
             }
         }
         .formStyle(.grouped)
@@ -107,13 +107,22 @@ struct GeneralTab: View {
     }
 
     private func setLaunchAtLogin(_ on: Bool) {
+        loginError = LaunchAtLogin.set(on)
+        loginStatus = SMAppService.mainApp.status
+    }
+}
+
+enum LaunchAtLogin {
+    static var isOn: Bool { [.enabled, .requiresApproval].contains(SMAppService.mainApp.status) }
+
+    /// Returns a message to show when macOS refuses the change.
+    static func set(_ on: Bool) -> String? {
         do {
             if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            loginError = nil
+            return nil
         } catch {
-            loginError = error.localizedDescription
+            return error.localizedDescription
         }
-        loginStatus = SMAppService.mainApp.status
     }
 }
 
@@ -261,7 +270,7 @@ struct AppearanceTab: View {
                 .pickerStyle(.segmented)
                 Toggle("Show latest copy next to the icon", isOn: $showRecent)
                 Toggle("Hide menu bar icon", isOn: $hideIcon)
-                if hideIcon { Caption("Use the shortcut to open Clippy. Open the app again from Finder to get back to Settings.") }
+                if hideIcon { Caption("Use the shortcut to open ClipStack. Open the app again from Finder to get back to Settings.") }
             }
         }
         .formStyle(.grouped)
@@ -478,10 +487,10 @@ struct AdvancedTab: View {
             }
             Section("Scripting") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("defaults write local.personal.clippy ignoreEvents -bool true")
-                    Text("defaults write local.personal.clippy ignoreOnlyNextEvent -bool true")
-                    Text("defaults write local.personal.clippy historySize -int 500")
-                    Text("open clippy://open    (also: settings, pause)")
+                    Text("defaults write io.github.goodguyej.clipstack ignoreEvents -bool true")
+                    Text("defaults write io.github.goodguyej.clipstack ignoreOnlyNextEvent -bool true")
+                    Text("defaults write io.github.goodguyej.clipstack historySize -int 500")
+                    Text("open clipstack://open    (also: settings, pause)")
                 }
                 .font(.system(size: 11, design: .monospaced))
                 .textSelection(.enabled)
