@@ -2,7 +2,7 @@ import AppKit
 import Carbon.HIToolbox
 
 /// UserDefaults keys. Several match the spec's scripting keys
-/// (`defaults write local.personal.clippy ignoreEvents -bool true`).
+/// (`defaults write io.github.goodguyej.clipstack ignoreEvents -bool true`).
 enum K {
     static let historySize = "historySize"
     static let ignoreEvents = "ignoreEvents"
@@ -42,7 +42,8 @@ enum K {
     static let popupHeight = "popupHeight"
     static let popupX = "popupX"
     static let popupY = "popupY"
-    static let axPromptShown = "axPromptShown"
+    static let axPromptVersion = "axPromptVersion"
+    static let welcomeShown = "welcomeShown"
 }
 
 enum SearchMode: String, CaseIterable, Identifiable {

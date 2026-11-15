@@ -2,8 +2,8 @@ import AppKit
 import CryptoKit
 
 extension NSPasteboard.PasteboardType {
-    /// Marker added to everything Clippy writes, so the monitor can tell its own writes apart.
-    static let clippyOwn = NSPasteboard.PasteboardType("local.personal.clippy.own")
+    /// Marker added to everything ClipStack writes, so the monitor can tell its own writes apart.
+    static let clipStackOwn = NSPasteboard.PasteboardType("io.github.goodguyej.clipstack.own")
 }
 
 func sha256(_ data: Data) -> String {
@@ -101,11 +101,11 @@ final class HistoryStore: ObservableObject {
     let blobsDir: URL
     private var file: URL { dir.appendingPathComponent("history-v2.json") }
     private var saveWork: DispatchWorkItem?
-    private let ioQueue = DispatchQueue(label: "local.personal.clippy.save", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "io.github.goodguyej.clipstack.save", qos: .utility)
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        dir = base.appendingPathComponent("Clippy", isDirectory: true)
+        dir = base.appendingPathComponent("ClipStack", isDirectory: true)
         blobsDir = dir.appendingPathComponent("blobs", isDirectory: true)
         try? FileManager.default.createDirectory(at: blobsDir, withIntermediateDirectories: true)
         protectDataFolder()
@@ -148,12 +148,12 @@ final class HistoryStore: ObservableObject {
             items = decoded.compactMap(\.item)
             if items.count < decoded.count {
                 backupHistoryFile(reason: "partial")
-                NSLog("Clippy: \(decoded.count - items.count) history items couldn't be read; original kept as a backup")
+                NSLog("ClipStack: \(decoded.count - items.count) history items couldn't be read; original kept as a backup")
             }
         } catch {
             // Never start over silently: keep the original file next to the new one.
             backupHistoryFile(reason: "unreadable")
-            NSLog("Clippy: history file couldn't be read (\(error)); original kept as a backup")
+            NSLog("ClipStack: history file couldn't be read (\(error)); original kept as a backup")
         }
     }
 
@@ -407,8 +407,8 @@ final class HistoryStore: ObservableObject {
                 pb.setString(list.map(\.plainString).filter { !$0.isEmpty }.joined(separator: "\n"), forType: .string)
             }
         }
-        pb.addTypes([.clippyOwn], owner: nil)
-        pb.setData(Data(), forType: .clippyOwn)
+        pb.addTypes([.clipStackOwn], owner: nil)
+        pb.setData(Data(), forType: .clipStackOwn)
     }
 
     /// PNG right away; TIFF only when an app asks for it, because building a TIFF of a large screenshot

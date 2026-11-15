@@ -121,7 +121,7 @@ enum Actions {
     static func about() {
         NSApp.activate()
         NSApp.orderFrontStandardAboutPanel(options: [
-            .credits: NSAttributedString(string: "A lightweight clipboard history for personal use."),
+            .credits: NSAttributedString(string: "A free, lightweight clipboard history for your Mac."),
         ])
     }
 }
