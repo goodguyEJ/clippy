@@ -39,6 +39,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# Ad-hoc sign so macOS will run it locally
-codesign --force --deep --sign - "$APP"
+# Ad-hoc sign with the hardened runtime, which blocks injecting code (DYLD_INSERT_LIBRARIES)
+# into an app that holds Accessibility permission. Clippy needs no entitlements.
+codesign --force --options runtime --sign - "$APP"
 echo "Built $PWD/$APP"

@@ -32,6 +32,7 @@ final class PopupModel: ObservableObject {
     @Published var scrollTarget: UUID?
     private(set) var numbered: [UUID] = []      // ⌘1–9 targets
     private(set) var dividerAfter: Int?         // index after which the pins/history divider is drawn
+    private(set) var regex: NSRegularExpression?
     let look = PopupLook()
     var onCursorChange: ((ClipItem?) -> Void)?
 
@@ -53,8 +54,11 @@ final class PopupModel: ObservableObject {
         let raw = query.trimmingCharacters(in: .whitespaces)
         let q = raw.lowercased()
         // Compile from the text as typed: lowercasing would turn \S into \s, \D into \d, etc.
-        let regex = (look.mode == .regexp || look.mode == .mixed) && !raw.isEmpty
+        regex = (look.mode == .regexp || look.mode == .mixed) && !raw.isEmpty
             ? try? NSRegularExpression(pattern: raw, options: [.caseInsensitive]) : nil
+        // A pathological regex the user types must not freeze the popup: once this budget is spent,
+        // remaining items skip the regex step.
+        let regexBudget = Date().addingTimeInterval(0.25)
         let prevCursorID = rows.indices.contains(cursor) ? rows[cursor].id : nil
         let prevAnchorID = rows.indices.contains(anchor) ? rows[anchor].id : nil
 
@@ -72,7 +76,8 @@ final class PopupModel: ObservableObject {
                     short = String(hay.prefix(2_000))
                     loweredShort[it.id] = short
                 }
-                if let s = Search.score(hay, short, q, mode: look.mode, regex: regex) { scored.append((it, s, i)) }
+                let re = Date() < regexBudget ? regex : nil
+                if let s = Search.score(hay, short, q, mode: look.mode, regex: re) { scored.append((it, s, i)) }
             }
             return scored.sorted { $0.score != $1.score ? $0.score > $1.score : $0.order < $1.order }.map(\.item)
         }
@@ -194,7 +199,7 @@ struct PopupView: View {
             ScrollView {
                 LazyVStack(spacing: 1) {
                     ForEach(Array(model.rows.enumerated()), id: \.element.id) { i, row in
-                        RowView(row: row, selected: model.selection.contains(row.id), query: model.query, look: look)
+                        RowView(row: row, selected: model.selection.contains(row.id), query: model.query, regex: model.regex, look: look)
                             .id(row.id)
                             .contentShape(Rectangle())
                             .onTapGesture { onClick(i, NSEvent.modifierFlags) }
@@ -241,6 +246,7 @@ struct RowView: View {
     let row: PopupRow
     let selected: Bool
     let query: String
+    let regex: NSRegularExpression?
     let look: PopupLook
 
     private var secondary: Color { selected ? .white.opacity(0.75) : .secondary }
@@ -295,7 +301,7 @@ struct RowView: View {
         var a = AttributedString(s)
         let q = query.trimmingCharacters(in: .whitespaces)
         if !q.isEmpty {
-            for r in Search.ranges(in: s, query: q, mode: look.mode) {
+            for r in Search.ranges(in: s, query: q, mode: look.mode, regex: regex) {
                 guard let ar = Range(r, in: a) else { continue }
                 switch look.highlight {
                 case .bold: a[ar].inlinePresentationIntent = .stronglyEmphasized
@@ -336,6 +342,7 @@ final class PopupController: NSObject, NSWindowDelegate {
     private var panel: PopupPanel?
     private lazy var model = PopupModel()
     private var previousApp: NSRunningApplication?
+    private var copyOnly = false
     private let preview = PreviewController()
     var statusItemFrame: () -> NSRect? = { nil }
     var openSettings: () -> Void = {}
@@ -346,11 +353,14 @@ final class PopupController: NSObject, NSWindowDelegate {
         isOpen ? close() : show(fromStatusItem: fromStatusItem)
     }
 
-    func show(fromStatusItem: Bool = false) {
+    /// `copyOnly` is for popups opened by a clippy:// link, which any app or page can send.
+    func show(fromStatusItem: Bool = false, copyOnly: Bool = false) {
         if isOpen { panel?.makeKeyAndOrderFront(nil); return }
+        self.copyOnly = copyOnly
         let front = NSWorkspace.shared.frontmostApplication
         // nil means Clippy itself (e.g. its Settings window) is the paste target.
         previousApp = front?.processIdentifier == getpid() ? nil : front
+        if front == nil { self.copyOnly = true }    // no known target, so never send ⌘V blind
         let caret = (!fromStatusItem && Prefs.popupPosition == .caret) ? Caret.rect() : nil
 
         model = PopupModel()
@@ -370,6 +380,7 @@ final class PopupController: NSObject, NSWindowDelegate {
         p.minSize = NSSize(width: 280, height: 200)
         p.backgroundColor = .clear
         p.isOpaque = false
+        p.sharingType = .none       // keep clipboard history out of screen shares and recordings
         p.delegate = self
 
         let effect = NSVisualEffectView()
@@ -466,6 +477,7 @@ final class PopupController: NSObject, NSWindowDelegate {
         var paste = Prefs.pasteAutomatically
         var plain = Prefs.pasteWithoutFormatting
         if opt && shift { paste = true; plain.toggle() } else if opt { paste.toggle() }
+        if copyOnly { paste = false }
         HistoryStore.shared.write(items, plain: plain)
         let target = previousApp
         close()
@@ -610,6 +622,7 @@ final class PreviewController {
         p.isOpaque = false
         p.backgroundColor = .clear
         p.hasShadow = true
+        p.sharingType = .none
         p.level = parent.level
         p.contentView = NSHostingView(rootView: PreviewView(item: item))
         let pf = parent.frame

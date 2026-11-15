@@ -2,19 +2,19 @@ import Foundation
 
 enum Search {
     /// Score for an item, or nil if no match. Higher is better.
-    /// `hay` is the lowercased search text; `short` is its first ~2,000 characters, used for fuzzy
-    /// matching so typing stays fast with large items. `q` is the lowercased query.
+    /// `hay` is the lowercased search text; `short` is its first ~2,000 characters, used for fuzzy and
+    /// regex matching (both cost per character) so typing stays fast with large items. `q` is the lowercased query.
     static func score(_ hay: String, _ short: String, _ q: String, mode: SearchMode, regex: NSRegularExpression?) -> Int? {
         switch mode {
         case .exact:
             return contains(hay, q) ? 0 : nil
         case .regexp:
-            return regexMatches(regex, hay) ? 0 : nil
+            return regexMatches(regex, short) ? 0 : nil
         case .fuzzy:
             return fuzzyScore(short, q)
         case .mixed:
             if contains(hay, q) { return 3_000_000 }
-            if regexMatches(regex, hay) { return 2_000_000 }
+            if regexMatches(regex, short) { return 2_000_000 }
             return fuzzyScore(short, q)
         }
     }
@@ -64,7 +64,25 @@ enum Search {
 
     private static func regexMatches(_ regex: NSRegularExpression?, _ s: String) -> Bool {
         guard let regex else { return false }
-        return regex.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+        return firstMatch(regex, in: s, timeout: 0.05) == true
+    }
+
+    /// Like `firstMatch(in:)`, but gives up after `timeout`: user-written patterns such as `(a+)+$`
+    /// backtrack exponentially and would otherwise freeze the app. Returns nil when it ran out of time.
+    static func firstMatch(_ re: NSRegularExpression, in s: String, timeout: TimeInterval) -> Bool? {
+        let deadline = Date().addingTimeInterval(timeout)
+        var found = false, timedOut = false, calls = 0
+        re.enumerateMatches(in: s, options: [.reportProgress], range: NSRange(s.startIndex..., in: s)) { m, _, stop in
+            calls += 1
+            if m != nil {
+                found = true
+                stop.pointee = true
+            } else if calls % 256 == 0 && Date() > deadline {   // progress fires about once per character; reading the clock each time tripled search cost
+                timedOut = true
+                stop.pointee = true
+            }
+        }
+        return found ? true : (timedOut ? nil : false)
     }
 
     /// Characters of `q` appear in order in `hay`. Rewards consecutive runs and word starts.
@@ -98,7 +116,7 @@ enum Search {
 
     /// Ranges in a display title to highlight. `q` is the query as typed (not lowercased,
     /// so regex escapes like \S and \D keep their meaning).
-    static func ranges(in title: String, query q: String, mode: SearchMode) -> [Range<String.Index>] {
+    static func ranges(in title: String, query q: String, mode: SearchMode, regex: NSRegularExpression?) -> [Range<String.Index>] {
         func exact() -> [Range<String.Index>] {
             var out: [Range<String.Index>] = []
             var from = title.startIndex
@@ -109,22 +127,26 @@ enum Search {
             }
             return out
         }
-        func regex() -> [Range<String.Index>] {
-            guard let re = try? NSRegularExpression(pattern: q, options: [.caseInsensitive]) else { return [] }
-            return re.matches(in: title, range: NSRange(title.startIndex..., in: title))
-                .compactMap { Range($0.range, in: title) }
-                .filter { !$0.isEmpty }
+        func regexRanges() -> [Range<String.Index>] {
+            guard let regex else { return [] }
+            var out: [Range<String.Index>] = []
+            let deadline = Date().addingTimeInterval(0.02)
+            regex.enumerateMatches(in: title, options: [.reportProgress], range: NSRange(title.startIndex..., in: title)) { m, _, stop in
+                if let m, let r = Range(m.range, in: title), !r.isEmpty { out.append(r) }
+                if Date() > deadline { stop.pointee = true }
+            }
+            return out
         }
         func fuzzy() -> [Range<String.Index>] {
             (Search.fuzzy(title, q.lowercased(), caseInsensitive: true)?.indices ?? []).map { $0..<title.index(after: $0) }
         }
         switch mode {
         case .exact: return exact()
-        case .regexp: return regex()
+        case .regexp: return regexRanges()
         case .fuzzy: return fuzzy()
         case .mixed:
             let e = exact(); if !e.isEmpty { return e }
-            let r = regex(); if !r.isEmpty { return r }
+            let r = regexRanges(); if !r.isEmpty { return r }
             return fuzzy()
         }
     }
