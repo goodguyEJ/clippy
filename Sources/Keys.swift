@@ -173,14 +173,14 @@ enum Paster {
     /// `app` is where the user was before opening the popup; nil means Clippy's own window.
     static func paste(into app: NSRunningApplication?) {
         guard AXIsProcessTrusted() else { askForAccessibility(); return }
-        // Usual case: the popup never took focus, so the target app is still in front.
-        // Also covers pasting into Clippy's own Settings window (app == nil).
-        guard NSApp.isActive, let app else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { pressCmdV() }
+        guard let app else {    // Clippy's own Settings window is the target
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { if NSApp.isActive { pressCmdV() } }
             return
         }
-        NSApp.hide(nil)
-        app.activate()
+        if NSApp.isActive {     // Clippy became active after the popup opened, so focus has to go back first
+            NSApp.hide(nil)
+            app.activate()
+        }
         pasteWhenFrontmost(app, triesLeft: 40)
     }
 

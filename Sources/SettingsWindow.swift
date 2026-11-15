@@ -118,6 +118,7 @@ struct StorageTab: View {
     @AppStorage(K.saveFiles) private var saveFiles = true
     @AppStorage(K.historySize) private var size = 200
     @AppStorage(K.sortBy) private var sortBy: SortBy = .lastCopiedAt
+    @AppStorage(K.forgetAfterDays) private var forgetDays = 0
     @State private var draft = 200
 
     var body: some View {
@@ -143,6 +144,12 @@ struct StorageTab: View {
                     }
                 }
                 Caption("1–999. Pinned items don't count toward this. You'll be asked before anything is removed.")
+                Picker("Forget unpinned items after", selection: Binding(get: { forgetDays }, set: { setForgetDays($0) })) {
+                    Text("Never").tag(0)
+                    Text("1 day").tag(1)
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                }
                 Picker("Sort by", selection: $sortBy) {
                     ForEach(SortBy.allCases) { Text($0.label).tag($0) }
                 }
@@ -154,6 +161,23 @@ struct StorageTab: View {
         }
         .formStyle(.grouped)
         .onAppear { draft = size }
+    }
+
+    private func setForgetDays(_ days: Int) {
+        if days > 0 {
+            let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
+            let old = HistoryStore.shared.items.filter { !$0.pinned && $0.lastCopiedAt < cutoff }.count
+            if old > 0 {
+                let a = NSAlert()
+                a.messageText = "Remove \(old) item\(old == 1 ? "" : "s") older than \(days) day\(days == 1 ? "" : "s")?"
+                a.informativeText = "Pinned items are kept. This can't be undone."
+                a.addButton(withTitle: "Remove")
+                a.addButton(withTitle: "Cancel")
+                a.buttons.first?.hasDestructiveAction = true
+                guard a.runModal() == .alertFirstButtonReturn else { return }
+            }
+        }
+        forgetDays = days
     }
 
     private func applySize() {
@@ -325,7 +349,12 @@ struct IgnoreTab: View {
                 }
                 .pickerStyle(.radioGroup)
                 .labelsHidden()
-                StringListEditor(key: K.ignoredApps, kind: .apps).id(K.ignoredApps)
+                // Separate lists: the ignore list's password-manager defaults must never become an allowlist.
+                if allowlist {
+                    StringListEditor(key: K.allowedApps, kind: .apps).id(K.allowedApps)
+                } else {
+                    StringListEditor(key: K.ignoredApps, kind: .apps, defaults: Prefs.defaultIgnoredApps).id(K.ignoredApps)
+                }
             case 1:
                 Caption("Copies that include any of these pasteboard types are never recorded. Password managers use these to mark private data.")
                 StringListEditor(key: K.ignoredTypes, kind: .text("com.example.private-type"), defaults: Prefs.defaultIgnoredTypes)
@@ -445,7 +474,7 @@ struct AdvancedTab: View {
                     Text("defaults write local.personal.clippy ignoreEvents -bool true")
                     Text("defaults write local.personal.clippy ignoreOnlyNextEvent -bool true")
                     Text("defaults write local.personal.clippy historySize -int 500")
-                    Text("open clippy://open    (also: settings, pause, resume)")
+                    Text("open clippy://open    (also: settings, pause)")
                 }
                 .font(.system(size: 11, design: .monospaced))
                 .textSelection(.enabled)

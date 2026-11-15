@@ -29,11 +29,13 @@ enum K {
     static let showAppIcons = "showApplicationIcons"
     static let showFooter = "showFooter"
     static let ignoredApps = "ignoredApps"
+    static let allowedApps = "allowedApps"
     static let ignoreAllAppsExceptListed = "ignoreAllAppsExceptListed"
     static let ignoredTypes = "ignoredPasteboardTypes"
     static let ignoreRegexes = "ignoreRegexp"
     static let clearOnQuit = "clearOnQuit"
     static let clearSystemClipboard = "clearSystemClipboard"
+    static let forgetAfterDays = "forgetAfterDays"
     static let hotKeyCode = "hotKeyCode"
     static let hotKeyMods = "hotKeyModifiers"
     static let popupWidth = "popupWidth"
@@ -114,6 +116,16 @@ enum Prefs {
         "net.antelle.keeweb",
     ]
 
+    /// Password managers whose copies are never recorded, even when they don't mark them as private.
+    static let defaultIgnoredApps = [
+        "com.apple.keychainaccess",
+        "com.apple.Passwords",
+        "com.1password.1password",
+        "com.agilebits.onepassword7",
+        "com.bitwarden.desktop",
+        "org.keepassxc.keepassxc",
+    ]
+
     static func registerDefaults() {
         migrateFromClipStash()
         migrateV1()
@@ -135,12 +147,14 @@ enum Prefs {
             K.hideMenuBarIcon: false,
             K.menuIcon: MenuIcon.list.rawValue,
             K.showSearch: true, K.showTitle: false, K.showAppIcons: true, K.showFooter: true,
-            K.ignoredApps: [String](),
+            K.ignoredApps: defaultIgnoredApps,
+            K.allowedApps: [String](),
             K.ignoreAllAppsExceptListed: false,
             K.ignoredTypes: defaultIgnoredTypes,
             K.ignoreRegexes: [String](),
             K.clearOnQuit: false,
             K.clearSystemClipboard: false,
+            K.forgetAfterDays: 0,
             K.hotKeyCode: kVK_ANSI_V,
             K.hotKeyMods: cmdKey | shiftKey,
             K.popupWidth: 440.0, K.popupHeight: 480.0,
@@ -209,6 +223,7 @@ enum Prefs {
     static var showAppIcons: Bool { d.bool(forKey: K.showAppIcons) }
     static var showFooter: Bool { d.bool(forKey: K.showFooter) }
     static var ignoredApps: [String] { d.stringArray(forKey: K.ignoredApps) ?? [] }
+    static var allowedApps: [String] { d.stringArray(forKey: K.allowedApps) ?? [] }
     static var allowlistMode: Bool { d.bool(forKey: K.ignoreAllAppsExceptListed) }
     static var ignoredTypes: Set<String> { Set(d.stringArray(forKey: K.ignoredTypes) ?? []) }
     static var ignoreRegexes: [NSRegularExpression] {
@@ -216,6 +231,7 @@ enum Prefs {
     }
     static var clearOnQuit: Bool { d.bool(forKey: K.clearOnQuit) }
     static var clearSystemClipboard: Bool { d.bool(forKey: K.clearSystemClipboard) }
+    static var forgetAfterDays: Int { max(0, d.integer(forKey: K.forgetAfterDays)) }
     static var hotKeyCode: Int { d.integer(forKey: K.hotKeyCode) }
     static var hotKeyMods: Int { d.integer(forKey: K.hotKeyMods) }
 }

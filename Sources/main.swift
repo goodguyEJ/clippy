@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let popup = PopupController()
     private var subs = Set<AnyCancellable>()
     private var lastHistorySize = 0
+    private var lastForgetDays = 0
     private var lastInterval = 0.0
 
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -35,8 +36,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HotKeyCenter.shared.registerIfChanged()
 
         lastHistorySize = Prefs.historySize
+        lastForgetDays = Prefs.forgetAfterDays
         lastInterval = Prefs.checkInterval
         monitor.start()
+        // Auto-forget also has to happen while nothing is being copied.
+        let t = Timer(timeInterval: 3600, repeats: true) { _ in HistoryStore.shared.enforceLimit() }
+        t.tolerance = 600
+        RunLoop.main.add(t, forMode: .common)
 
         NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
             .receive(on: DispatchQueue.main)
@@ -56,15 +62,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        if Prefs.clearOnQuit { HistoryStore.shared.clear(includePins: false) }
+        if Prefs.clearOnQuit { HistoryStore.shared.clear(includePins: false, deleteRecoveryBackups: false) }
         HistoryStore.shared.saveNow(sync: true)
     }
 
     private func prefsChanged() {
         refreshStatusItem()
         HotKeyCenter.shared.registerIfChanged()
-        if Prefs.historySize != lastHistorySize {
+        if Prefs.historySize != lastHistorySize || Prefs.forgetAfterDays != lastForgetDays {
             lastHistorySize = Prefs.historySize
+            lastForgetDays = Prefs.forgetAfterDays
             HistoryStore.shared.enforceLimit()
         }
         if Prefs.checkInterval != lastInterval {
@@ -143,16 +150,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         HistoryStore.shared.write([it], plain: Prefs.pasteWithoutFormatting)
     }
 
-    // MARK: URL scheme: clippy://open | settings | pause | resume
+    // MARK: URL scheme: clippy://open | settings | pause
+    // Any app or web page can send these, so none of them may weaken privacy:
+    // there is no "resume", and a popup opened by a link never pastes on its own.
 
     @objc private func handleURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let s = event.paramDescriptor(forKeyword: AEKeyword(keyDirectObject))?.stringValue,
               let url = URL(string: s) else { return }
         switch url.host {
-        case "open": popup.show()
+        case "open": popup.show(copyOnly: true)
         case "settings": SettingsWindowController.shared.show()
         case "pause": Prefs.ignoreEvents = true
-        case "resume": Prefs.ignoreEvents = false
         default: break
         }
     }

@@ -93,6 +93,7 @@ final class HistoryStore: ObservableObject {
 
     @Published private(set) var items: [ClipItem] = []
     var lastWrittenID: UUID?
+    private(set) var clearCount = 0
 
     let dir: URL
     let blobsDir: URL
@@ -105,8 +106,25 @@ final class HistoryStore: ObservableObject {
         dir = base.appendingPathComponent("Clippy", isDirectory: true)
         blobsDir = dir.appendingPathComponent("blobs", isDirectory: true)
         try? FileManager.default.createDirectory(at: blobsDir, withIntermediateDirectories: true)
+        protectDataFolder()
         load()
+        // "Clear history when quitting" must also hold after a crash or force quit, when quit-time code never ran.
+        if Prefs.clearOnQuit {
+            items.removeAll { !$0.pinned }
+            saveNow(sync: true)
+        }
+        enforceLimit()
         gcBlobs()   // drop files left behind by crashes or manual edits (backups are respected)
+    }
+
+    /// Clipboard history can hold passwords: keep it out of other accounts' reach and out of Time Machine,
+    /// where cleared items would otherwise survive in old backups.
+    private func protectDataFolder() {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var url = dir
+        try? url.setResourceValues(values)
     }
 
     var unpinnedCount: Int { items.lazy.filter { !$0.pinned }.count }
@@ -224,13 +242,21 @@ final class HistoryStore: ObservableObject {
         }
     }
 
+    private func backupFiles() -> [URL] {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return files.filter { $0.hasPrefix("history-v2.") && $0 != "history-v2.json" }.map { dir.appendingPathComponent($0) }
+    }
+
+    private func deleteBackups() {
+        for url in backupFiles() { try? FileManager.default.removeItem(at: url) }
+    }
+
     /// Blobs named in backup history files are kept, so a backup can still be restored by hand.
     private func blobsReferencedByBackups() -> Set<String> {
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
-              let re = try? NSRegularExpression(pattern: "[0-9a-f]{32}\\.bin") else { return [] }
+        guard let re = try? NSRegularExpression(pattern: "[0-9a-f]{32}\\.bin") else { return [] }
         var out = Set<String>()
-        for f in files where f.hasPrefix("history-v2.") && f != "history-v2.json" {
-            guard let s = try? String(contentsOf: dir.appendingPathComponent(f), encoding: .utf8) else { continue }
+        for url in backupFiles() {
+            guard let s = try? String(contentsOf: url, encoding: .utf8) else { continue }
             for m in re.matches(in: s, range: NSRange(s.startIndex..., in: s)) {
                 if let r = Range(m.range, in: s) { out.insert(String(s[r])) }
             }
@@ -268,9 +294,10 @@ final class HistoryStore: ObservableObject {
 
     func enforceLimit() {
         let limit = Prefs.historySize
+        let cutoff = Prefs.forgetAfterDays > 0 ? Date().addingTimeInterval(-Double(Prefs.forgetAfterDays) * 86_400) : .distantPast
         let unpinned = items.filter { !$0.pinned }.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
-        guard unpinned.count > limit else { return }
-        let dropped = unpinned[limit...]
+        let dropped = unpinned.enumerated().filter { $0.offset >= limit || $0.element.lastCopiedAt < cutoff }.map(\.element)
+        guard !dropped.isEmpty else { return }
         let drop = Set(dropped.map(\.id))
         items.removeAll { drop.contains($0.id) }
         if dropped.contains(where: { !$0.contents.isEmpty }) { gcBlobs() }
@@ -332,15 +359,21 @@ final class HistoryStore: ObservableObject {
 
     func setText(_ id: UUID, _ text: String) {
         guard let i = items.firstIndex(where: { $0.id == id }), items[i].kind == .text else { return }
+        let hadBlobs = !items[i].contents.isEmpty
         items[i].text = text
         items[i].contents = []          // edited content loses its original formatting
         items[i].key = ClipItem.textKey(text)
+        if hadBlobs { gcBlobs() }       // the old formatting still holds the old text
         scheduleSave()
     }
 
-    func clear(includePins: Bool) {
+    /// Recovery backups only exist after a history file failed to load and may hold pins that couldn't be read,
+    /// so only a Clear the user asks for removes them; the automatic clear-on-quit keeps them.
+    func clear(includePins: Bool, deleteRecoveryBackups: Bool = true) {
+        clearCount += 1
         items.removeAll { includePins || !$0.pinned }
         if Prefs.clearSystemClipboard { NSPasteboard.general.clearContents() }
+        if deleteRecoveryBackups { deleteBackups() }
         gcBlobs()
         saveNow()
     }
