@@ -29,7 +29,10 @@ final class PopupModel: ObservableObject {
     @Published private(set) var rows: [PopupRow] = []
     @Published private(set) var cursor = 0
     @Published private(set) var selection: Set<UUID> = []
-    @Published var scrollTarget: UUID?
+    /// A new value even for the same row, so jumping back to an off-screen row still scrolls.
+    struct ScrollRequest: Equatable { let id: UUID; let serial: Int }
+    @Published var scrollTarget: ScrollRequest?
+    private var scrollSerial = 0
     private(set) var numbered: [UUID] = []      // ⌘1–9 targets
     private(set) var dividerAfter: Int?         // index after which the pins/history divider is drawn
     private(set) var regex: NSRegularExpression?
@@ -119,11 +122,22 @@ final class PopupModel: ObservableObject {
             anchor = c
             selection = [rows[c].id]
         }
-        if scroll { scrollTarget = rows[c].id }
+        if scroll {
+            scrollSerial += 1
+            scrollTarget = ScrollRequest(id: rows[c].id, serial: scrollSerial)
+        }
         onCursorChange?(rows[c].item)
     }
 
     func move(_ delta: Int, extend: Bool) { setCursor(cursor + delta, extend: extend) }
+
+    /// Called when the popup closes: stops refreshing on every copy and frees the search caches.
+    func detach() {
+        sub = nil
+        onCursorChange = nil
+        lowered = [:]
+        loweredShort = [:]
+    }
 
     /// Follows the mouse only when it actually moved, so rows scrolling under a still
     /// pointer (keyboard navigation, or opening at the cursor) don't steal the selection.
@@ -210,7 +224,7 @@ struct PopupView: View {
                 .padding(5)
             }
             .onChange(of: model.scrollTarget) { _, target in
-                if let target { proxy.scrollTo(target) }
+                if let target { proxy.scrollTo(target.id) }
             }
         }
     }
@@ -281,8 +295,8 @@ struct RowView: View {
     private func content(_ item: ClipItem, title: String) -> some View {
         switch item.kind {
         case .image:
-            if let b = item.imageBlob, let img = Display.thumbnail(b, maxPixel: Int(look.imageHeight * 4)) {
-                Image(nsImage: img).resizable().scaledToFit()
+            if let b = item.imageBlob {
+                Thumbnail(blob: b, maxPixel: Int(look.imageHeight * 4))
                     .frame(maxWidth: 320, maxHeight: look.imageHeight, alignment: .leading)
                     .clipShape(RoundedRectangle(cornerRadius: 3))
             }
@@ -435,7 +449,8 @@ final class PopupController: NSObject, NSWindowDelegate {
             ref = NSPoint(x: origin.x + 10, y: origin.y + 10)
         }
 
-        let screen = NSScreen.screens.first { NSMouseInRect(ref, $0.frame, false) } ?? NSScreen.main ?? NSScreen.screens[0]
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(ref, $0.frame, false) }) ?? NSScreen.main ?? NSScreen.screens.first
+        else { return }   // displays can be momentarily absent while they reconfigure
         let vf = screen.visibleFrame
         origin.x = min(max(origin.x, vf.minX + 6), vf.maxX - size.width - 6)
         origin.y = min(max(origin.y, vf.minY + 6), vf.maxY - size.height - 6)
@@ -446,7 +461,7 @@ final class PopupController: NSObject, NSWindowDelegate {
         guard let p = panel else { return }
         panel = nil
         preview.hide()
-        model.onCursorChange = nil
+        model.detach()
         let f = p.frame
         let d = Prefs.d
         d.set(f.width, forKey: K.popupWidth)
@@ -626,7 +641,7 @@ final class PreviewController {
         p.level = parent.level
         p.contentView = NSHostingView(rootView: PreviewView(item: item))
         let pf = parent.frame
-        let vf = (parent.screen ?? NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+        guard let vf = (parent.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame else { return }
         var x = pf.maxX + 6
         if x + size.width > vf.maxX { x = pf.minX - size.width - 6 }
         let y = max(pf.maxY - size.height, vf.minY)
@@ -644,8 +659,8 @@ struct PreviewView: View {
             Group {
                 switch item.kind {
                 case .image:
-                    if let b = item.imageBlob, let img = Display.thumbnail(b, maxPixel: 900) {
-                        Image(nsImage: img).resizable().scaledToFit()
+                    if let b = item.imageBlob {
+                        Thumbnail(blob: b, maxPixel: 900, cache: false)   // one preview at a time; not worth cache space
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 case .file:

@@ -48,7 +48,14 @@ enum K {
 enum SearchMode: String, CaseIterable, Identifiable {
     case exact, fuzzy, regexp, mixed
     var id: String { rawValue }
-    var label: String { ["exact": "Exact", "fuzzy": "Fuzzy", "regexp": "Regex", "mixed": "Mixed"][rawValue]! }
+    var label: String {
+        switch self {
+        case .exact: "Exact"
+        case .fuzzy: "Fuzzy"
+        case .regexp: "Regex"
+        case .mixed: "Mixed"
+        }
+    }
 }
 
 enum SortBy: String, CaseIterable, Identifiable {
@@ -127,8 +134,6 @@ enum Prefs {
     ]
 
     static func registerDefaults() {
-        migrateFromClipStash()
-        migrateV1()
         d.register(defaults: [
             K.historySize: 200,
             K.clipboardCheckInterval: 0.5,
@@ -159,33 +164,6 @@ enum Prefs {
             K.hotKeyMods: cmdKey | shiftKey,
             K.popupWidth: 440.0, K.popupHeight: 480.0,
         ])
-    }
-
-    /// The app used to be called ClipStash: move its history folder and settings over once.
-    /// Runs before defaults are registered and before the history store loads.
-    private static func migrateFromClipStash() {
-        let fm = FileManager.default
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let oldDir = base.appendingPathComponent("ClipStash")
-        let newDir = base.appendingPathComponent("Clippy")
-        if fm.fileExists(atPath: oldDir.path) && !fm.fileExists(atPath: newDir.path) {
-            try? fm.moveItem(at: oldDir, to: newDir)
-        }
-        guard !d.bool(forKey: "migratedFromClipStash") else { return }
-        for (k, v) in d.persistentDomain(forName: "local.personal.clipstash") ?? [:] where d.object(forKey: k) == nil {
-            d.set(v, forKey: k)
-        }
-        d.set(true, forKey: "migratedFromClipStash")
-    }
-
-    /// Carry over settings from the first version of Clippy.
-    private static func migrateV1() {
-        for (old, new) in [("maxItems", K.historySize), ("autoPaste", K.pasteAutomatically), ("paused", K.ignoreEvents)] {
-            if let v = d.object(forKey: old) {
-                if d.object(forKey: new) == nil { d.set(v, forKey: new) }
-                d.removeObject(forKey: old)
-            }
-        }
     }
 
     private static func e<T: RawRepresentable>(_ k: String, _ def: T) -> T where T.RawValue == String {

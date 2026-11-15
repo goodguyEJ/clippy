@@ -40,7 +40,7 @@ open build/Clippy.app
 | In the popup | Action |
 |---|---|
 | Type | Search |
-| ↑ ↓ (⌃P ⌃N, ⌃K ⌃J) | Move. Add ⇧ to select several |
+| ↑ ↓ (⌃P ⌃N, ⌃K ⌃J) | Move. Add ⇧ to select several: images paste as images, anything else is joined as plain text |
 | ⌘↑ ⌘↓, Home End | First / last |
 | ↩ or click | Paste into the previous app (copy only if "Paste automatically" is off) |
 | ⌥↩ | The opposite of ↩ |
