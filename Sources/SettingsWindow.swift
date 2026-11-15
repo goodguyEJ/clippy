@@ -4,7 +4,7 @@ import ServiceManagement
 import UniformTypeIdentifiers
 import Carbon.HIToolbox
 
-final class SettingsWindowController {
+final class SettingsWindowController: NSObject, NSWindowDelegate {
     static let shared = SettingsWindowController()
     private var window: NSWindow?
 
@@ -14,12 +14,16 @@ final class SettingsWindowController {
             w.title = "Clippy Settings"
             w.styleMask = [.titled, .closable, .miniaturizable]
             w.isReleasedWhenClosed = false
+            w.delegate = self
             w.center()
             window = w
         }
         NSApp.activate()
         window?.makeKeyAndOrderFront(nil)
     }
+
+    /// Dropping the window tears down its views, so a closed Settings window costs nothing.
+    func windowWillClose(_ notification: Notification) { window = nil }
 }
 
 struct SettingsView: View {
@@ -51,7 +55,6 @@ struct GeneralTab: View {
     @AppStorage(K.searchMode) private var searchMode: SearchMode = .exact
     @AppStorage(K.pasteAutomatically) private var pasteAuto = true
     @AppStorage(K.pasteWithoutFormatting) private var plain = false
-    private let timer = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
 
     var body: some View {
         Form {
@@ -93,10 +96,14 @@ struct GeneralTab: View {
             }
         }
         .formStyle(.grouped)
-        .onReceive(timer) { _ in
-            axTrusted = AXIsProcessTrusted()
-            loginStatus = SMAppService.mainApp.status
-        }
+        .onAppear(perform: refreshStatus)
+        // Permissions are granted in System Settings, so re-check when the user comes back instead of polling.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refreshStatus() }
+    }
+
+    private func refreshStatus() {
+        axTrusted = AXIsProcessTrusted()
+        loginStatus = SMAppService.mainApp.status
     }
 
     private func setLaunchAtLogin(_ on: Bool) {

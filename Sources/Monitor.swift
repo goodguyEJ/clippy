@@ -1,14 +1,23 @@
 import AppKit
 
 final class ClipboardMonitor {
-    private var lastChange = NSPasteboard.general.changeCount
+    private let pb: NSPasteboard
+    private var lastChange: Int
     private var timer: Timer?
     private var lastFront = NSWorkspace.shared.frontmostApplication
     private var activatedSincePoll: [NSRunningApplication] = []
     private var observer: NSObjectProtocol?
-    private let ignoreCheckQueue = DispatchQueue(label: "local.personal.clippy.ignore-check", qos: .utility)   // serial, so text copies waiting on this check are recorded in order
+    private let captureQueue = DispatchQueue(label: "local.personal.clippy.capture", qos: .utility)
 
-    init() {
+    private struct Capture {
+        var item: ClipItem
+        var blobs: [(type: String, data: Data)] = []
+        var imageData: Data?
+    }
+
+    init(pasteboard: NSPasteboard = .general) {
+        pb = pasteboard
+        lastChange = pasteboard.changeCount
         // Remember every app that comes to the front between polls: any of them could be
         // where a copy happened, even if the user switched away before the next poll.
         observer = NSWorkspace.shared.notificationCenter.addObserver(
@@ -33,8 +42,7 @@ final class ClipboardMonitor {
         timer = t
     }
 
-    private func check() {
-        let pb = NSPasteboard.general
+    func check() {
         let front = NSWorkspace.shared.frontmostApplication
         let candidates = ([lastFront] + activatedSincePoll + [front]).compactMap { $0 }
         let source = lastFront ?? front      // the app that was in front when this poll window began
@@ -48,7 +56,7 @@ final class ClipboardMonitor {
         let store = HistoryStore.shared
 
         // Our own write: bump the existing item, never create a new one.
-        if types.contains(.clipStashOwn) {
+        if types.contains(.clippyOwn) {
             if let id = store.lastWrittenID { store.bump(id) }
             return
         }
@@ -71,12 +79,6 @@ final class ClipboardMonitor {
             ClipItem(kind: kind, application: source?.bundleIdentifier, appName: source?.localizedName, key: key)
         }
 
-        /// "Ignore next copy" is used up only by a copy that would otherwise have been saved.
-        func commit(_ item: ClipItem, blobs: [(type: String, data: Data)] = []) {
-            if Prefs.ignoreOnlyNextEvent { Prefs.ignoreOnlyNextEvent = false; return }
-            store.record(item, blobs: blobs)
-        }
-
         // Files (Finder also puts the file name on the pasteboard as text, so check files first)
         if typeNames.contains(NSPasteboard.PasteboardType.fileURL.rawValue) {
             guard Prefs.saveFiles else { return }
@@ -85,7 +87,7 @@ final class ClipboardMonitor {
                 let strs = urls.map(\.absoluteString)
                 var item = make(.file, key: "f:" + strs.joined(separator: "|"))
                 item.fileURLs = strs
-                commit(item)
+                enqueue { Capture(item: item) }
                 return
             }
         }
@@ -100,30 +102,53 @@ final class ClipboardMonitor {
                 if let data = pb.data(forType: t), data.count < 10_000_000 { blobs.append((t.rawValue, data)) }
             }
             let regexes = Prefs.ignoreRegexes
-            guard !regexes.isEmpty else { commit(item, blobs: blobs); return }
-            // User-written patterns run off the main thread with a time limit, so a slow pattern or a huge copy
-            // can't freeze the app. A timed-out pattern (nil) counts as a match: when unsure, don't record.
             let snapshot = item
-            let clearsBefore = store.clearCount
-            ignoreCheckQueue.async {
-                let skip = regexes.contains { Search.firstMatch($0, in: s, timeout: 2) != false }
-                DispatchQueue.main.async {
-                    // A Clear while the check ran means the user wanted this gone too.
-                    if !skip && store.clearCount == clearsBefore { commit(snapshot, blobs: blobs) }
-                }
+            enqueue {
+                // User-written patterns are time-limited; a timed-out pattern (nil) counts as a match: when unsure, don't record.
+                regexes.contains { Search.firstMatch($0, in: s, timeout: 2) != false } ? nil : Capture(item: snapshot, blobs: blobs)
             }
             return
         }
 
         // Images
         guard Prefs.saveImages else { return }
-        var png = pb.data(forType: .png)
-        if png == nil, let tiff = pb.data(forType: .tiff) {
-            png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:])
+        let png = pb.data(forType: .png)
+        let tiff = png == nil ? pb.data(forType: .tiff) : nil
+        guard png != nil || tiff != nil else { return }
+        let base = make(.image, key: "")
+        enqueue {
+            // Converting, hashing and saving a large screenshot takes hundreds of ms, hence the background queue.
+            guard let data = png ?? tiff.flatMap({ NSBitmapImageRep(data: $0)?.representation(using: .png, properties: [:]) }),
+                  data.count < 25_000_000 else { return nil }
+            let name = store.putBlob(data)
+            var item = base
+            item.key = "i:" + name
+            item.contents = [ClipContent(type: NSPasteboard.PasteboardType.png.rawValue, blob: name)]
+            return Capture(item: item, imageData: data)
         }
-        if let png, png.count < 25_000_000 {
-            commit(make(.image, key: "i:" + store.blobName(for: png)),
-                   blobs: [(NSPasteboard.PasteboardType.png.rawValue, png)])
+    }
+
+    /// Every copy goes through this one serial queue, even without background work, so copies are
+    /// recorded, and "Ignore next copy" is used up, in the order they happened.
+    private func enqueue(_ work: @escaping () -> Capture?) {
+        let store = HistoryStore.shared
+        let clearsBefore = store.clearCount
+        // Only a copy made while "Ignore next copy" was on may use it up; one still being processed
+        // when it was switched on must not swallow it and let the copy the user meant to hide through.
+        let ignoreArmed = Prefs.ignoreOnlyNextEvent
+        captureQueue.async {
+            guard let capture = work() else { return }
+            DispatchQueue.main.async {
+                let cleared = store.clearCount != clearsBefore     // a Clear while this ran: the user wanted it gone too
+                let ignored = ignoreArmed && Prefs.ignoreOnlyNextEvent
+                if cleared || ignored {
+                    if ignored && !cleared { Prefs.ignoreOnlyNextEvent = false }
+                    store.removeUnusedBlobs(of: [capture.item])    // an image has already written its file
+                    return
+                }
+                if let data = capture.imageData, let name = capture.item.imageBlob { store.keepBlob(name, data: data) }
+                store.record(capture.item, blobs: capture.blobs)
+            }
         }
     }
 }

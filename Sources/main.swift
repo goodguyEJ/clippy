@@ -1,4 +1,4 @@
-// Clippy — a lightweight clipboard history for the macOS menu bar. Personal use.
+// Clippy — a lightweight clipboard history for the macOS menu bar.
 // Build with ./build.sh
 
 import AppKit
@@ -44,10 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         t.tolerance = 600
         RunLoop.main.add(t, forMode: .common)
 
-        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.prefsChanged() }
-            .store(in: &subs)
+        // KVO rather than UserDefaults.didChangeNotification: it also reports `defaults write` from Terminal,
+        // and it ignores the frequent writes of keys nothing here depends on (popup size and position).
+        for key in Self.observedKeys { UserDefaults.standard.addObserver(self, forKeyPath: key, options: [], context: nil) }
         HistoryStore.shared.$items
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.refreshStatusItem() }
@@ -64,6 +63,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         if Prefs.clearOnQuit { HistoryStore.shared.clear(includePins: false, deleteRecoveryBackups: false) }
         HistoryStore.shared.saveNow(sync: true)
+    }
+
+    private static let observedKeys = [
+        K.ignoreEvents, K.ignoreOnlyNextEvent, K.historySize, K.forgetAfterDays, K.clipboardCheckInterval,
+        K.hideMenuBarIcon, K.showRecentInMenuBar, K.menuIcon, K.hotKeyCode, K.hotKeyMods,
+    ]
+
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?,
+                               change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        DispatchQueue.main.async { self.prefsChanged() }
     }
 
     private func prefsChanged() {
@@ -102,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.toolTip = paused ? "Clippy: recording paused (⌥-click to resume)"
             : skipNext ? "Clippy: ignoring the next copy"
             : "Clippy (\(HotKeyFormat.string(code: Prefs.hotKeyCode, mods: Prefs.hotKeyMods)))"
-        if Prefs.showRecentInMenuBar, let latest = HistoryStore.shared.sorted(.lastCopiedAt).first {
+        if Prefs.showRecentInMenuBar, let latest = HistoryStore.shared.items.max(by: { $0.lastCopiedAt < $1.lastCopiedAt }) {
             let t = Display.title(latest, special: false)
             b.title = " " + (t.count > 24 ? String(t.prefix(23)) + "…" : t)
         } else {

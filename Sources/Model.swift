@@ -3,7 +3,7 @@ import CryptoKit
 
 extension NSPasteboard.PasteboardType {
     /// Marker added to everything Clippy writes, so the monitor can tell its own writes apart.
-    static let clipStashOwn = NSPasteboard.PasteboardType("local.personal.clippy.own")
+    static let clippyOwn = NSPasteboard.PasteboardType("local.personal.clippy.own")
 }
 
 func sha256(_ data: Data) -> String {
@@ -94,6 +94,8 @@ final class HistoryStore: ObservableObject {
     @Published private(set) var items: [ClipItem] = []
     var lastWrittenID: UUID?
     private(set) var clearCount = 0
+    private var backupBlobs: Set<String> = []       // read once at launch: backups can be large
+    private var tiffProviders: [TIFFProvider] = []  // kept alive while their images are on the clipboard
 
     let dir: URL
     let blobsDir: URL
@@ -108,6 +110,7 @@ final class HistoryStore: ObservableObject {
         try? FileManager.default.createDirectory(at: blobsDir, withIntermediateDirectories: true)
         protectDataFolder()
         load()
+        backupBlobs = blobsReferencedByBackups()
         // "Clear history when quitting" must also hold after a crash or force quit, when quit-time code never ran.
         if Prefs.clearOnQuit {
             items.removeAll { !$0.pinned }
@@ -138,7 +141,7 @@ final class HistoryStore: ObservableObject {
     }
 
     private func load() {
-        guard FileManager.default.fileExists(atPath: file.path) else { migrateV1(); return }
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
         do {
             let data = try Data(contentsOf: file)
             let decoded = try JSONDecoder().decode([Failable].self, from: data)
@@ -158,43 +161,6 @@ final class HistoryStore: ObservableObject {
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
         let dest = dir.appendingPathComponent("history-v2.\(reason)-\(stamp).json")
         try? FileManager.default.copyItem(at: file, to: dest)
-    }
-
-    private struct LegacyItem: Decodable {
-        var kind: String
-        var text: String?
-        var imageFile: String?
-        var date: Date
-        var pinned: Bool?
-        var sourceApp: String?
-    }
-
-    /// Converts the first version's history.json + images/ folder.
-    private func migrateV1() {
-        let old = dir.appendingPathComponent("history.json")
-        let oldImages = dir.appendingPathComponent("images")
-        guard let data = try? Data(contentsOf: old),
-              let list = try? JSONDecoder().decode([LegacyItem].self, from: data) else { return }
-        var out: [ClipItem] = []
-        for l in list {
-            var item: ClipItem?
-            if l.kind == "text", let t = l.text {
-                item = ClipItem(kind: .text, text: t, firstCopiedAt: l.date, lastCopiedAt: l.date,
-                                appName: l.sourceApp, key: ClipItem.textKey(t))
-            } else if let f = l.imageFile, let png = try? Data(contentsOf: oldImages.appendingPathComponent(f)) {
-                let b = putBlob(png)
-                item = ClipItem(kind: .image, contents: [ClipContent(type: NSPasteboard.PasteboardType.png.rawValue, blob: b)],
-                                firstCopiedAt: l.date, lastCopiedAt: l.date, appName: l.sourceApp, key: "i:" + b)
-            }
-            guard var it = item else { continue }
-            if l.pinned == true { it.pinned = true }
-            out.append(it)
-        }
-        items = out
-        for i in items.indices where items[i].pinned { items[i].pin = nextFreeLetter() }
-        saveNow(sync: true)
-        try? FileManager.default.removeItem(at: old)
-        try? FileManager.default.removeItem(at: oldImages)
     }
 
     /// Encodes and writes on a background queue so large histories never stall the UI.
@@ -222,6 +188,7 @@ final class HistoryStore: ObservableObject {
 
     func blobName(for data: Data) -> String { String(sha256(data).prefix(32)) + ".bin" }
 
+    /// Only touches the file system, so the monitor calls it off the main thread for large images.
     func putBlob(_ data: Data) -> String {
         let name = blobName(for: data)
         let url = blobsDir.appendingPathComponent(name)
@@ -233,12 +200,15 @@ final class HistoryStore: ObservableObject {
     func blobURL(_ name: String) -> URL { blobsDir.appendingPathComponent(name) }
     func blobData(_ name: String) -> Data? { try? Data(contentsOf: blobURL(name)) }
 
+    /// Full scan of the blobs folder; only for launch and Clear. Deletes and evictions use `removeUnusedBlobs`.
+    /// Runs on ioQueue, behind any queued `keepBlob` rewrite that would otherwise restore a cleared file.
     private func gcBlobs() {
         var used = Set(items.flatMap { $0.contents.map(\.blob) })
-        used.formUnion(blobsReferencedByBackups())
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: blobsDir.path) else { return }
-        for f in files where !used.contains(f) {
-            try? FileManager.default.removeItem(at: blobsDir.appendingPathComponent(f))
+        used.formUnion(backupBlobs)
+        let folder = blobsDir
+        ioQueue.async {
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+            for f in files where !used.contains(f) { try? FileManager.default.removeItem(at: folder.appendingPathComponent(f)) }
         }
     }
 
@@ -249,6 +219,30 @@ final class HistoryStore: ObservableObject {
 
     private func deleteBackups() {
         for url in backupFiles() { try? FileManager.default.removeItem(at: url) }
+        backupBlobs = []
+    }
+
+    /// Deletes the files of removed items that nothing else uses. Queued after a save, so a crash can't
+    /// leave the saved history pointing at files that are already gone. Returns whether it saved.
+    @discardableResult
+    func removeUnusedBlobs(of removed: [ClipItem]) -> Bool {
+        var used = Set(items.flatMap { $0.contents.map(\.blob) })
+        used.formUnion(backupBlobs)
+        let names = Set(removed.flatMap { $0.contents.map(\.blob) }).subtracting(used)
+        guard !names.isEmpty else { return false }
+        saveNow()
+        let folder = blobsDir
+        ioQueue.async { for n in names { try? FileManager.default.removeItem(at: folder.appendingPathComponent(n)) } }
+        return true
+    }
+
+    /// The same content can be recorded again while its file is still queued for deletion, after `putBlob`
+    /// already saw the file and skipped writing it. ioQueue is serial, so this check runs after that delete.
+    func keepBlob(_ name: String, data: Data) {
+        let url = blobURL(name)
+        ioQueue.async {
+            if !FileManager.default.fileExists(atPath: url.path) { try? data.write(to: url, options: .atomic) }
+        }
     }
 
     /// Blobs named in backup history files are kept, so a backup can still be restored by hand.
@@ -277,12 +271,15 @@ final class HistoryStore: ObservableObject {
             if !blobs.isEmpty { item.contents = storeBlobs(blobs) }
             items.append(item)
         }
-        enforceLimit()
-        scheduleSave()
+        if !enforceLimit() { scheduleSave() }
     }
 
     private func storeBlobs(_ blobs: [(type: String, data: Data)]) -> [ClipContent] {
-        blobs.map { ClipContent(type: $0.type, blob: putBlob($0.data)) }
+        blobs.map { blob in
+            let name = putBlob(blob.data)
+            keepBlob(name, data: blob.data)
+            return ClipContent(type: blob.type, blob: name)
+        }
     }
 
     func bump(_ id: UUID) {
@@ -292,16 +289,19 @@ final class HistoryStore: ObservableObject {
         scheduleSave()
     }
 
-    func enforceLimit() {
+    /// Returns whether it already saved (it does when evicted items had files to delete).
+    @discardableResult
+    func enforceLimit() -> Bool {
         let limit = Prefs.historySize
         let cutoff = Prefs.forgetAfterDays > 0 ? Date().addingTimeInterval(-Double(Prefs.forgetAfterDays) * 86_400) : .distantPast
         let unpinned = items.filter { !$0.pinned }.sorted { $0.lastCopiedAt > $1.lastCopiedAt }
         let dropped = unpinned.enumerated().filter { $0.offset >= limit || $0.element.lastCopiedAt < cutoff }.map(\.element)
-        guard !dropped.isEmpty else { return }
+        guard !dropped.isEmpty else { return false }
         let drop = Set(dropped.map(\.id))
         items.removeAll { drop.contains($0.id) }
-        if dropped.contains(where: { !$0.contents.isEmpty }) { gcBlobs() }
+        if removeUnusedBlobs(of: dropped) { return true }
         scheduleSave()
+        return false
     }
 
     func sorted(_ by: SortBy) -> [ClipItem] {
@@ -315,10 +315,9 @@ final class HistoryStore: ObservableObject {
     }
 
     func delete(_ ids: Set<UUID>) {
-        let hadBlobs = items.contains { ids.contains($0.id) && !$0.contents.isEmpty }
+        let removed = items.filter { ids.contains($0.id) }
         items.removeAll { ids.contains($0.id) }
-        if hadBlobs { gcBlobs() }
-        scheduleSave()
+        if !removeUnusedBlobs(of: removed) { scheduleSave() }
     }
 
     /// Pins all given items if any is unpinned; otherwise unpins them all.
@@ -359,12 +358,11 @@ final class HistoryStore: ObservableObject {
 
     func setText(_ id: UUID, _ text: String) {
         guard let i = items.firstIndex(where: { $0.id == id }), items[i].kind == .text else { return }
-        let hadBlobs = !items[i].contents.isEmpty
+        let old = items[i]
         items[i].text = text
         items[i].contents = []          // edited content loses its original formatting
         items[i].key = ClipItem.textKey(text)
-        if hadBlobs { gcBlobs() }       // the old formatting still holds the old text
-        scheduleSave()
+        if !removeUnusedBlobs(of: [old]) { scheduleSave() }    // the old formatting still holds the old text
     }
 
     /// Recovery backups only exist after a history file failed to load and may hold pins that couldn't be read,
@@ -374,26 +372,23 @@ final class HistoryStore: ObservableObject {
         items.removeAll { includePins || !$0.pinned }
         if Prefs.clearSystemClipboard { NSPasteboard.general.clearContents() }
         if deleteRecoveryBackups { deleteBackups() }
-        gcBlobs()
         saveNow()
+        gcBlobs()
     }
 
     // MARK: Writing back to the pasteboard
 
-    func write(_ list: [ClipItem], plain: Bool) {
+    func write(_ list: [ClipItem], plain: Bool, to pb: NSPasteboard = .general) {
         guard !list.isEmpty else { return }
-        let pb = NSPasteboard.general
         pb.clearContents()
+        tiffProviders = []
         if list.count == 1, let item = list.first {
             lastWrittenID = item.id
             switch item.kind {
             case .file where !plain:
                 pb.writeObjects((item.fileURLs ?? []).compactMap { URL(string: $0) } as [NSURL])
             case .image:
-                if let b = item.imageBlob, let png = blobData(b) {
-                    pb.setData(png, forType: .png)
-                    if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation { pb.setData(tiff, forType: .tiff) }
-                }
+                if let b = item.imageBlob, let png = blobData(b) { pb.writeObjects([imagePasteboardItem(png)]) }
             default:
                 pb.setString(item.plainString, forType: .string)
                 if !plain {
@@ -404,12 +399,38 @@ final class HistoryStore: ObservableObject {
             }
         } else {
             lastWrittenID = nil
-            if !plain && list.allSatisfy({ $0.kind == .file }) {
+            if list.allSatisfy({ $0.kind == .image }) {
+                pb.writeObjects(list.compactMap { $0.imageBlob.flatMap(blobData) }.map(imagePasteboardItem))
+            } else if !plain && list.allSatisfy({ $0.kind == .file }) {
                 pb.writeObjects(list.flatMap { ($0.fileURLs ?? []).compactMap { URL(string: $0) } } as [NSURL])
             } else {
                 pb.setString(list.map(\.plainString).filter { !$0.isEmpty }.joined(separator: "\n"), forType: .string)
             }
         }
-        pb.setData(Data(), forType: .clipStashOwn)
+        pb.addTypes([.clippyOwn], owner: nil)
+        pb.setData(Data(), forType: .clippyOwn)
+    }
+
+    /// PNG right away; TIFF only when an app asks for it, because building a TIFF of a large screenshot
+    /// takes a noticeable moment on every paste.
+    private func imagePasteboardItem(_ png: Data) -> NSPasteboardItem {
+        let item = NSPasteboardItem()
+        item.setData(png, forType: .png)
+        let provider = TIFFProvider(png: png)
+        provider.onFinished = { [weak self] done in DispatchQueue.main.async { self?.tiffProviders.removeAll { $0 === done } } }
+        tiffProviders.append(provider)
+        item.setDataProvider(provider, forTypes: [.tiff])
+        return item
+    }
+}
+
+private final class TIFFProvider: NSObject, NSPasteboardItemDataProvider {
+    let png: Data
+    var onFinished: ((TIFFProvider) -> Void)?
+    init(png: Data) { self.png = png }
+    /// The clipboard moved on, so the image no longer has to stay in memory.
+    func pasteboardFinishedWithDataProvider(_ pasteboard: NSPasteboard) { onFinished?(self) }
+    func pasteboard(_ pasteboard: NSPasteboard?, item: NSPasteboardItem, provideDataForType type: NSPasteboard.PasteboardType) {
+        if let tiff = NSBitmapImageRep(data: png)?.tiffRepresentation { item.setData(tiff, forType: type) }
     }
 }
